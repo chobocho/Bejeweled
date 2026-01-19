@@ -181,18 +181,41 @@ class Game {
         // Animation flags
         this.isProcessing = false;
         this.lastTime = 0;
+        // 입력 처리를 위한 추가 속성
+        this.touchStartX = 0;
+        this.touchStartY = 0;
+        this.activeGem = null; // 드래그 시작한 보석
         this.canvas = document.getElementById("gameCanvas");
         this.ctx = this.canvas.getContext("2d");
         this.db = new DBManager();
         this.sound = new SoundManager();
         this.resize();
         window.addEventListener("resize", () => this.resize());
-        // Input Handling
-        this.canvas.addEventListener("mousedown", (e) => this.handleInputStart(e.clientX, e.clientY));
+        // --- 입력 핸들링 수정 (마우스/터치 통합) ---
+        // 터치 시작
         this.canvas.addEventListener("touchstart", (e) => {
-            // e.preventDefault(); // prevents standard scroll, handled by CSS touch-action
-            this.handleInputStart(e.touches[0].clientX, e.touches[0].clientY);
+            e.preventDefault(); // 스크롤 방지
+            const touch = e.touches[0];
+            this.handleInputDown(touch.clientX, touch.clientY);
         }, { passive: false });
+        // 터치 이동 (스와이프 감지용)
+        this.canvas.addEventListener("touchmove", (e) => {
+            e.preventDefault(); // 스크롤 방지
+        }, { passive: false });
+        // 터치 끝 (스와이프 완료 처리)
+        this.canvas.addEventListener("touchend", (e) => {
+            e.preventDefault();
+            // touchend에는 touches가 없으므로 changedTouches 사용
+            const touch = e.changedTouches[0];
+            this.handleInputUp(touch.clientX, touch.clientY);
+        }, { passive: false });
+        // 마우스 (데스크탑)
+        this.canvas.addEventListener("mousedown", (e) => {
+            this.handleInputDown(e.clientX, e.clientY);
+        });
+        this.canvas.addEventListener("mouseup", (e) => {
+            this.handleInputUp(e.clientX, e.clientY);
+        });
         this.init().then(() => {
             this.loop(0);
         });
@@ -207,11 +230,11 @@ class Game {
         this.height = window.innerHeight;
         this.canvas.width = this.width;
         this.canvas.height = this.height;
-        // Calculate board scale and position
-        const boardSize = Math.min(this.width, this.height * 0.8); // Leave space for UI
+        // 보드 크기 및 위치 재계산
+        const boardSize = Math.min(this.width, this.height * 0.8);
         this.scale = boardSize / (COLS * GEM_SIZE);
         this.offsetX = (this.width - boardSize) / 2;
-        this.offsetY = (this.height - boardSize) / 2 + 50; // Offset for header
+        this.offsetY = (this.height - boardSize) / 2 + 50;
     }
     // --- Game Logic ---
     startPuzzle(level) {
@@ -285,28 +308,37 @@ class Game {
             return true;
         return false;
     }
-    handleInputStart(clientX, clientY) {
+    // 좌표 변환 헬퍼 함수
+    getGridPos(clientX, clientY) {
+        // 캔버스의 실제 위치를 고려하여 좌표 보정 (가장 중요!)
+        const rect = this.canvas.getBoundingClientRect();
+        const x = clientX - rect.left;
+        const y = clientY - rect.top;
+        const boardSize = COLS * GEM_SIZE * this.scale;
+        // 보드 영역 밖인지 확인
+        if (x < this.offsetX || x > this.offsetX + boardSize ||
+            y < this.offsetY || y > this.offsetY + boardSize) {
+            return null;
+        }
+        const gx = Math.floor((x - this.offsetX) / (GEM_SIZE * this.scale));
+        const gy = Math.floor((y - this.offsetY) / (GEM_SIZE * this.scale));
+        if (gx >= 0 && gx < COLS && gy >= 0 && gy < ROWS) {
+            return { x: gx, y: gy };
+        }
+        return null;
+    }
+    handleInputDown(clientX, clientY) {
         if (this.isProcessing)
             return;
-        // UI Click Handling (Simple regions)
+        // 메뉴 버튼 처리 등은 좌표 변환 없이 기존 로직과 유사하게 처리
         if (this.state === GameState.MENU) {
-            if (clientY > this.height / 2 - 50 && clientY < this.height / 2) {
-                // Puzzle Start (Level 1 or stored max?)
-                // For simplicity, showing Level selection could be complex.
-                // Let's start at Level 1 or last played logic.
-                // Here: Start Level 1
+            if (clientY > this.height / 2 - 50 && clientY < this.height / 2)
                 this.startPuzzle(1);
-            }
-            else if (clientY > this.height / 2 + 20 && clientY < this.height / 2 + 70) {
+            else if (clientY > this.height / 2 + 20 && clientY < this.height / 2 + 70)
                 this.startZen();
-            }
             return;
         }
-        if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
-            this.state = GameState.MENU;
-            return;
-        }
-        // Pause Button (Top Right)
+        // 일시정지 버튼 등 UI 처리
         if (this.state === GameState.PLAYING_PUZZLE && clientX > this.width - 60 && clientY < 60) {
             this.state = GameState.PAUSED;
             return;
@@ -315,14 +347,53 @@ class Game {
             this.state = GameState.PLAYING_PUZZLE;
             return;
         }
-        // Board Interaction
-        const boardSize = COLS * GEM_SIZE * this.scale;
-        if (clientX >= this.offsetX && clientX <= this.offsetX + boardSize &&
-            clientY >= this.offsetY && clientY <= this.offsetY + boardSize) {
-            const gx = Math.floor((clientX - this.offsetX) / (GEM_SIZE * this.scale));
-            const gy = Math.floor((clientY - this.offsetY) / (GEM_SIZE * this.scale));
-            this.handleGemClick(gx, gy);
+        if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
+            this.state = GameState.MENU;
+            return;
         }
+        // 보석 터치 시작
+        const pos = this.getGridPos(clientX, clientY);
+        if (pos) {
+            this.touchStartX = clientX;
+            this.touchStartY = clientY;
+            this.activeGem = pos;
+        }
+        else {
+            this.activeGem = null;
+        }
+    }
+    handleInputUp(clientX, clientY) {
+        if (!this.activeGem || this.isProcessing)
+            return;
+        const endPos = this.getGridPos(clientX, clientY);
+        const dx = clientX - this.touchStartX;
+        const dy = clientY - this.touchStartY;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        // 1. 스와이프 (드래그) 감지
+        // 30px 이상 움직였으면 스와이프로 간주
+        if (dist > 30) {
+            let tx = this.activeGem.x;
+            let ty = this.activeGem.y;
+            if (Math.abs(dx) > Math.abs(dy)) {
+                // 좌우 이동
+                tx += dx > 0 ? 1 : -1;
+            }
+            else {
+                // 상하 이동
+                ty += dy > 0 ? 1 : -1;
+            }
+            // 유효한 범위 내라면 교체 시도
+            if (tx >= 0 && tx < COLS && ty >= 0 && ty < ROWS) {
+                this.sound.playSelectSound();
+                this.swapGems(this.activeGem.x, this.activeGem.y, tx, ty);
+                this.selectedGem = null; // 선택 상태 해제
+            }
+        }
+        // 2. 탭 (클릭) 감지
+        else if (endPos && endPos.x === this.activeGem.x && endPos.y === this.activeGem.y) {
+            this.handleGemClick(this.activeGem.x, this.activeGem.y);
+        }
+        this.activeGem = null;
     }
     handleGemClick(x, y) {
         this.sound.playSelectSound();
@@ -502,31 +573,46 @@ class Game {
         }
     }
     draw() {
-        // Clear
+        // 1. 화면 지우기
         this.ctx.fillStyle = "#222";
         this.ctx.fillRect(0, 0, this.width, this.height);
-        // Header
+        // 2. UI 그리기
         this.drawUI();
-        // Menu Override
+        // 메뉴 상태면 여기서 종료
         if (this.state === GameState.MENU) {
             this.drawMenu();
             return;
         }
-        // Board Background
+        // ============================================================
+        // [수정 핵심] Grid가 아직 생성되지 않았으면 여기서 그리기 중단
+        // 비동기 로딩(Zen 모드) 중에 에러가 나는 것을 막아줍니다.
+        // ============================================================
+        if (!this.grid || this.grid.length === 0) {
+            // 로딩 중이라는 표시를 띄워도 좋습니다.
+            this.ctx.fillStyle = "white";
+            this.ctx.textAlign = "center";
+            this.ctx.fillText("Loading...", this.width / 2, this.height / 2);
+            return;
+        }
+        // 3. 보드 배경 그리기
         const boardSize = COLS * GEM_SIZE * this.scale;
         this.ctx.fillStyle = "#111";
         this.ctx.fillRect(this.offsetX - 10, this.offsetY - 10, boardSize + 20, boardSize + 20);
-        // Gems
+        // 4. 보석 그리기
         const cellSize = GEM_SIZE * this.scale;
         for (let y = 0; y < ROWS; y++) {
+            // [안전 장치] 해당 행(Row)이 존재하는지 확인
+            if (!this.grid[y])
+                continue;
             for (let x = 0; x < COLS; x++) {
                 const gem = this.grid[y][x];
+                // gem이 있고, 매치되어 사라지는 중이 아닐 때만 그림 (또는 사라지는 효과 구현 시 변경)
                 if (gem && !gem.isMatch) {
                     this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, gem === this.selectedGem);
                 }
             }
         }
-        // Overlays
+        // 5. 오버레이(일시정지, 게임오버 등) 그리기
         if (this.state === GameState.PAUSED) {
             this.drawOverlay("PAUSED", "Click to Resume");
         }

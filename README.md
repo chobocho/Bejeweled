@@ -1,6 +1,6 @@
 # Bejewled Clone
 
-# How to make
+## How to make
 ~~~
 1. Bejewled clone을 만들고 싶어
 2. Typescript로 구현을 해주세요
@@ -18,3 +18,6 @@
 14. 마우스와 터치 스크린을 지원해야 해.
 15. 블럭이 사라질때 마다, 경쾌한 소리가 나야해.
 ~~~
+
+## Build & Run
+tsc game.ts --target es6
