@@ -230,11 +230,25 @@ class Game {
         this.height = window.innerHeight;
         this.canvas.width = this.width;
         this.canvas.height = this.height;
-        // 보드 크기 및 위치 재계산
-        const boardSize = Math.min(this.width, this.height * 0.8);
-        this.scale = boardSize / (COLS * GEM_SIZE);
-        this.offsetX = (this.width - boardSize) / 2;
-        this.offsetY = (this.height - boardSize) / 2 + 50;
+        // [수정됨] UI를 위한 상단 여백 확보
+        // 화면 높이의 15% 또는 최소 80px, 최대 120px 확보 (모바일 상단바/노치 고려)
+        const uiMinHeight = 80;
+        const uiMaxHeight = 120;
+        const uiRatioHeight = this.height * 0.15;
+        // clamp logic
+        const uiHeight = Math.max(uiMinHeight, Math.min(uiMaxHeight, uiRatioHeight));
+        // 남은 공간에서 정사각형 보드의 최대 크기 계산
+        const availableWidth = this.width;
+        const availableHeight = this.height - uiHeight;
+        // 가로/세로 중 작은 쪽에 맞추되, 화면에 꽉 차지 않게 95%만 사용 (여백)
+        const boardPixelSize = Math.min(availableWidth, availableHeight) * 0.95;
+        // 스케일 계산
+        this.scale = boardPixelSize / (COLS * GEM_SIZE);
+        // 위치 계산
+        // 가로: 중앙 정렬
+        this.offsetX = (this.width - boardPixelSize) / 2;
+        // 세로: UI 영역(uiHeight) 아래에 배치하고, 남은 공간의 중앙에 위치
+        this.offsetY = uiHeight + (availableHeight - boardPixelSize) / 2;
     }
     // --- Game Logic ---
     startPuzzle(level) {
@@ -349,6 +363,18 @@ class Game {
         }
         if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
             this.state = GameState.MENU;
+            return;
+        }
+        // UI 버튼 처리 (Puzzle: 일시정지, Zen: 나가기)
+        // 우측 상단 영역 터치 시
+        if (clientX > this.width - 80 && clientY < this.offsetY) {
+            if (this.state === GameState.PLAYING_PUZZLE) {
+                this.state = GameState.PAUSED;
+            }
+            else if (this.state === GameState.PLAYING_ZEN) {
+                this.state = GameState.MENU; // 젠 모드는 저장 후 메뉴로
+                this.saveState();
+            }
             return;
         }
         // 보석 터치 시작
@@ -651,23 +677,49 @@ class Game {
         }
     }
     drawUI() {
+        // UI 영역의 높이 (보드 시작점 바로 위까지)
+        const headerHeight = this.offsetY;
+        const safelyY = headerHeight * 0.4; // 텍스트 기준점 (대략 상단 40% 지점)
+        // 1. 점수 (좌측)
         this.ctx.fillStyle = "white";
-        this.ctx.font = "20px Arial";
+        this.ctx.font = "bold 20px Arial";
         this.ctx.textAlign = "left";
-        this.ctx.fillText(`Score: ${this.score}`, 20, 40);
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(`Score: ${this.score}`, 20, safelyY);
         if (this.state === GameState.PLAYING_PUZZLE) {
+            // 2. 레벨 (중앙)
             this.ctx.textAlign = "center";
-            this.ctx.fillText(`Level: ${this.level}`, this.width / 2, 40);
-            // Time Bar
-            this.ctx.fillStyle = "#444";
-            this.ctx.fillRect(20, 60, this.width - 40, 10);
-            const timeRatio = Math.max(0, this.timeLeft / this.maxTime);
-            this.ctx.fillStyle = timeRatio > 0.3 ? "green" : "red";
-            this.ctx.fillRect(20, 60, (this.width - 40) * timeRatio, 10);
-            // Pause Button
-            this.ctx.fillStyle = "white";
+            this.ctx.fillText(`Level: ${this.level}`, this.width / 2, safelyY);
+            // 3. 일시정지 버튼 (우측)
             this.ctx.textAlign = "right";
-            this.ctx.fillText("||", this.width - 20, 40);
+            this.ctx.fillText("||", this.width - 20, safelyY);
+            // 4. 시간 게이지 바 (텍스트 아래쪽에 배치)
+            const barHeight = 12;
+            const barY = safelyY + 25; // 텍스트 아래 25px 지점
+            const barWidth = this.width - 40; // 좌우 20px 여백
+            // 배경 바
+            this.ctx.fillStyle = "#444";
+            this.ctx.beginPath();
+            this.ctx.roundRect(20, barY, barWidth, barHeight, 5); // 둥근 모서리
+            this.ctx.fill();
+            // 진행 바
+            const timeRatio = Math.max(0, this.timeLeft / this.maxTime);
+            this.ctx.fillStyle = timeRatio > 0.3 ? "#4CAF50" : "#F44336"; // 초록 or 빨강
+            this.ctx.beginPath();
+            this.ctx.roundRect(20, barY, barWidth * timeRatio, barHeight, 5);
+            this.ctx.fill();
+        }
+        else if (this.state === GameState.PLAYING_ZEN) {
+            // 젠 모드는 타이머가 없으므로 중앙에 모드 이름 표시
+            this.ctx.textAlign = "center";
+            this.ctx.fillStyle = "#aaa";
+            this.ctx.font = "16px Arial";
+            this.ctx.fillText("ZEN MODE", this.width / 2, safelyY + 25);
+            // 메뉴 나가기 버튼 (일시정지 대신)
+            this.ctx.textAlign = "right";
+            this.ctx.fillStyle = "white";
+            this.ctx.font = "bold 20px Arial";
+            this.ctx.fillText("EXIT", this.width - 20, safelyY);
         }
     }
     drawMenu() {
