@@ -259,29 +259,34 @@ class Game {
         this.canvas.width = this.width;
         this.canvas.height = this.height;
 
-        // [수정됨] UI를 위한 상단 여백 확보
-        // 화면 높이의 15% 또는 최소 80px, 최대 120px 확보 (모바일 상단바/노치 고려)
-        const uiMinHeight = 80;
-        const uiMaxHeight = 120;
-        const uiRatioHeight = this.height * 0.15;
-        // clamp logic
-        const uiHeight = Math.max(uiMinHeight, Math.min(uiMaxHeight, uiRatioHeight));
+        // 1. 상단 UI 영역 (최소 60px ~ 최대 100px)
+        // 폴드는 화면이 커서 비율(0.15)로 하면 너무 클 수 있으므로 max 제한을 둡니다.
+        const uiMinHeight = 60;
+        const uiMaxHeight = 100;
+        const uiHeight = Math.max(uiMinHeight, Math.min(uiMaxHeight, this.height * 0.15));
 
-        // 남은 공간에서 정사각형 보드의 최대 크기 계산
+        // 2. [핵심 수정] 하단 안전 여백 (Bottom Padding)
+        // 브라우저 주소창이나 안드로이드 제스처 바를 위해 하단에 50px 정도 여유를 둡니다.
+        const bottomPadding = 50;
+
+        // 3. 게임 보드가 사용할 수 있는 실제 공간 계산
         const availableWidth = this.width;
-        const availableHeight = this.height - uiHeight;
+        const availableHeight = this.height - uiHeight - bottomPadding;
 
-        // 가로/세로 중 작은 쪽에 맞추되, 화면에 꽉 차지 않게 95%만 사용 (여백)
-        const boardPixelSize = Math.min(availableWidth, availableHeight) * 0.95;
+        // 4. 보드 크기 결정 (가로/세로 중 작은 쪽에 맞춤)
+        // 좌우 여백도 살짝 주기 위해 0.95 (95%) 사용
+        let boardPixelSize = Math.min(availableWidth, availableHeight) * 0.95;
 
-        // 스케일 계산
+        // 5. 스케일 및 위치 계산
         this.scale = boardPixelSize / (COLS * GEM_SIZE);
 
-        // 위치 계산
-        // 가로: 중앙 정렬
+        // 가로 중앙 정렬
         this.offsetX = (this.width - boardPixelSize) / 2;
-        // 세로: UI 영역(uiHeight) 아래에 배치하고, 남은 공간의 중앙에 위치
-        this.offsetY = uiHeight + (availableHeight - boardPixelSize) / 2;
+
+        // 세로 위치: 상단 UI 바로 아래에서 시작하되,
+        // 남은 공간(availableHeight) 내에서도 중앙에 오도록 미세 조정
+        const verticalSpaceLeft = availableHeight - boardPixelSize;
+        this.offsetY = uiHeight + (verticalSpaceLeft / 2);
     }
     // --- Game Logic ---
 
@@ -756,56 +761,70 @@ class Game {
     }
 
     drawUI() {
-        // UI 영역의 높이 (보드 시작점 바로 위까지)
+        // UI 영역의 높이
         const headerHeight = this.offsetY;
-        const safelyY = headerHeight * 0.4; // 텍스트 기준점 (대략 상단 40% 지점)
 
-        // 1. 점수 (좌측)
+        // 텍스트 기준점 (대략 상단 40% 지점)
+        const safelyY = headerHeight * 0.4;
+
+        // 좁은 화면 체크 (폴드 접은 화면 등 모바일 포트레이트 기준)
+        const isNarrow = this.width < 450;
+
+        // 1. 공통 폰트 설정
         this.ctx.fillStyle = "white";
-        this.ctx.font = "bold 20px Arial";
-        this.ctx.textAlign = "left";
+        // 좁은 화면이면 폰트를 조금 줄임 (20px -> 18px)
+        this.ctx.font = isNarrow ? "bold 18px sans-serif" : "bold 22px sans-serif";
         this.ctx.textBaseline = "middle";
+
+        // 2. 점수 (항상 왼쪽)
+        this.ctx.textAlign = "left";
         this.ctx.fillText(`Score: ${this.score}`, 20, safelyY);
 
+        // 3. 버튼 (항상 오른쪽 끝)
+        this.ctx.textAlign = "right";
+        const btnText = this.state === GameState.PLAYING_ZEN ? "EXIT" : "||";
+        this.ctx.fillText(btnText, this.width - 20, safelyY);
+
+        // 4. 레벨 및 타이머 (퍼즐 모드일 때만)
         if (this.state === GameState.PLAYING_PUZZLE) {
-            // 2. 레벨 (중앙)
-            this.ctx.textAlign = "center";
-            this.ctx.fillText(`Level: ${this.level}`, this.width / 2, safelyY);
 
-            // 3. 일시정지 버튼 (우측)
-            this.ctx.textAlign = "right";
-            this.ctx.fillText("||", this.width - 20, safelyY);
+            if (isNarrow) {
+                // [수정됨] 좁은 화면: 레벨을 중앙이 아닌 오른쪽 버튼 옆에 배치
+                // 버튼("||")의 너비를 고려해 약 40~50px 왼쪽으로 이동
+                this.ctx.textAlign = "right";
+                this.ctx.fillText(`Lv.${this.level}`, this.width - 50, safelyY);
+            } else {
+                // 넓은 화면: 기존대로 중앙 배치
+                this.ctx.textAlign = "center";
+                this.ctx.fillText(`Level: ${this.level}`, this.width / 2, safelyY);
+            }
 
-            // 4. 시간 게이지 바 (텍스트 아래쪽에 배치)
-            const barHeight = 12;
-            const barY = safelyY + 25; // 텍스트 아래 25px 지점
-            const barWidth = this.width - 40; // 좌우 20px 여백
+            // 타이머 바
+            const barHeight = 10;
+            const barY = safelyY + 25;
+            const barWidth = this.width - 40;
 
             // 배경 바
             this.ctx.fillStyle = "#444";
             this.ctx.beginPath();
-            this.ctx.roundRect(20, barY, barWidth, barHeight, 5); // 둥근 모서리
+            this.ctx.roundRect(20, barY, barWidth, barHeight, 5);
             this.ctx.fill();
 
             // 진행 바
             const timeRatio = Math.max(0, this.timeLeft / this.maxTime);
-            this.ctx.fillStyle = timeRatio > 0.3 ? "#4CAF50" : "#F44336"; // 초록 or 빨강
+            this.ctx.fillStyle = timeRatio > 0.3 ? "#4CAF50" : "#F44336";
             this.ctx.beginPath();
             this.ctx.roundRect(20, barY, barWidth * timeRatio, barHeight, 5);
             this.ctx.fill();
         }
         else if (this.state === GameState.PLAYING_ZEN) {
-            // 젠 모드는 타이머가 없으므로 중앙에 모드 이름 표시
+            // 젠 모드 텍스트
             this.ctx.textAlign = "center";
             this.ctx.fillStyle = "#aaa";
-            this.ctx.font = "16px Arial";
-            this.ctx.fillText("ZEN MODE", this.width / 2, safelyY + 25);
-
-            // 메뉴 나가기 버튼 (일시정지 대신)
-            this.ctx.textAlign = "right";
-            this.ctx.fillStyle = "white";
-            this.ctx.font = "bold 20px Arial";
-            this.ctx.fillText("EXIT", this.width - 20, safelyY);
+            this.ctx.font = isNarrow ? "14px sans-serif" : "16px sans-serif";
+            // 좁은 화면에서는 겹치지 않게 타이머 바 위치(조금 아래)에 텍스트 표시
+            const textY = isNarrow ? safelyY + 25 : safelyY;
+            this.ctx.fillText("ZEN MODE", this.width / 2, textY);
         }
     }
 
