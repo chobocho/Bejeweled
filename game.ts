@@ -39,7 +39,8 @@ enum GameState {
     PAUSED,
     LEVEL_CLEAR,
     GAME_OVER,
-    LEVEL_SELECT
+    LEVEL_SELECT,
+    CONTINUE_PROMPT
 }
 
 enum GemType {
@@ -65,6 +66,11 @@ interface PuzzleRecord {
 interface ZenSaveData {
     score: number;
     board: number[][]; // Gem types
+}
+
+interface GameSaveData {
+    id: string;
+    lastLevel: number;
 }
 
 // ==========================================
@@ -124,7 +130,7 @@ class SoundManager {
 // ==========================================
 class DBManager {
     private dbName = "GemPuzzleDB";
-    private dbVersion = 1;
+    private dbVersion = 2;
     private db: IDBDatabase | null = null;
 
     constructor() {}
@@ -140,6 +146,9 @@ class DBManager {
                 }
                 if (!db.objectStoreNames.contains("zen_save")) {
                     db.createObjectStore("zen_save", { keyPath: "id" });
+                }
+                if (!db.objectStoreNames.contains("game_save")) {
+                    db.createObjectStore("game_save", { keyPath: "id" });
                 }
             };
 
@@ -181,6 +190,27 @@ class DBManager {
             req.onsuccess = () => resolve(req.result);
         });
     }
+
+    async saveGameProgress(level: number) {
+        if (!this.db) return;
+        const tx = this.db.transaction("game_save", "readwrite");
+        tx.objectStore("game_save").put({ id: "current", lastLevel: level });
+    }
+
+    async loadGameProgress(): Promise<number | undefined> {
+        if (!this.db) return undefined;
+        return new Promise((resolve) => {
+            const tx = this.db!.transaction("game_save", "readonly");
+            const req = tx.objectStore("game_save").get("current");
+            req.onsuccess = () => resolve(req.result?.lastLevel);
+        });
+    }
+
+    async clearGameProgress() {
+        if (!this.db) return;
+        const tx = this.db.transaction("game_save", "readwrite");
+        tx.objectStore("game_save").delete("current");
+    }
 }
 
 // ==========================================
@@ -221,6 +251,7 @@ class Game {
 
     // Level select data
     levelRecords: Map<number, PuzzleRecord> = new Map();
+    lastSavedLevel: number = 1;
 
     // 입력 처리를 위한 추가 속성
     touchStartX: number = 0;
@@ -259,9 +290,9 @@ class Game {
             }
             if (this.isDraggingLevelSelect) {
                 const delta = touch.clientY - this.levelSelectPrevTouchY;
-                const fixedCellH = 60;
-                const startY = 80;
-                const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+                const cellH = 72;
+                const headerH = 70;
+                const maxScrollY = Math.max(0, (headerH + 20 * cellH) - this.height);
                 this.levelSelectScrollY = Math.max(0, Math.min(maxScrollY, this.levelSelectScrollY - delta));
             }
             this.levelSelectPrevTouchY = touch.clientY;
@@ -287,9 +318,9 @@ class Game {
         this.canvas.addEventListener("wheel", (e) => {
             if (this.state !== GameState.LEVEL_SELECT) return;
             e.preventDefault();
-            const fixedCellH = 60;
-            const startY = 80;
-            const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+            const cellH = 72;
+            const headerH = 70;
+            const maxScrollY = Math.max(0, (headerH + 20 * cellH) - this.height);
             this.levelSelectScrollY = Math.max(0, Math.min(maxScrollY, this.levelSelectScrollY + e.deltaY * 0.5));
         }, { passive: false });
 
@@ -300,6 +331,12 @@ class Game {
 
     async init() {
         await this.db.init();
+        const savedLevel = await this.db.loadGameProgress();
+        if (savedLevel && savedLevel > 0) {
+            this.lastSavedLevel = savedLevel;
+            await this.loadLevelRecords();
+            this.state = GameState.CONTINUE_PROMPT;
+        }
     }
 
     resize() {
@@ -340,6 +377,7 @@ class Game {
     // --- Game Logic ---
 
     startPuzzle(level: number) {
+        this.db.saveGameProgress(level);
         this.finishLevelCalled = false;
         this.state = GameState.PLAYING_PUZZLE;
         this.level = level;
@@ -444,6 +482,27 @@ class Game {
         this.levelSelectPrevTouchY = clientY;
         this.isDraggingLevelSelect = false;
 
+        // 이어하기 프롬프트 처리
+        if (this.state === GameState.CONTINUE_PROMPT) {
+            const cardW = Math.min(360, this.width - 48);
+            const cardY = this.height * 0.35;
+            const cardH = 200;
+            const btnW = Math.min(140, (cardW - 36) / 2);
+            const btnH = 48;
+            const btnY = cardY + cardH - 64;
+            const continueX = this.width / 2 - btnW - 8;
+            const newGameX = this.width / 2 + 8;
+            if (clientY >= btnY && clientY <= btnY + btnH) {
+                if (clientX >= continueX && clientX <= continueX + btnW) {
+                    this.startPuzzle(this.lastSavedLevel);
+                } else if (clientX >= newGameX && clientX <= newGameX + btnW) {
+                    this.db.clearGameProgress();
+                    this.state = GameState.MENU;
+                }
+            }
+            return;
+        }
+
         // 메뉴 버튼 처리 등은 좌표 변환 없이 기존 로직과 유사하게 처리
         if (this.state === GameState.MENU) {
             if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
@@ -458,7 +517,9 @@ class Game {
 
         // 레벨 선택 화면 처리
         if (this.state === GameState.LEVEL_SELECT) {
-            if (clientX < 80 && clientY < 60) {
+            this.touchStartX = clientX;
+            this.touchStartY = clientY;
+            if (clientX < 88 && clientY < 70) {
                 this.state = GameState.MENU;
                 this.levelSelectScrollY = 0;
                 return;
@@ -505,7 +566,7 @@ class Game {
         // 레벨 선택 화면: 드래그 아니면 탭으로 레벨 선택
         if (this.state === GameState.LEVEL_SELECT) {
             if (!this.isDraggingLevelSelect) {
-                if (clientX < 80 && clientY < 60) {
+                if (clientX < 88 && clientY < 70) {
                     this.state = GameState.MENU;
                     this.levelSelectScrollY = 0;
                 } else {
@@ -765,6 +826,12 @@ class Game {
         this.ctx.fillStyle = "#222";
         this.ctx.fillRect(0, 0, this.width, this.height);
 
+        // 이어하기 프롬프트 (UI 바 없이 전체 화면)
+        if (this.state === GameState.CONTINUE_PROMPT) {
+            this.drawContinuePrompt();
+            return;
+        }
+
         // 2. UI 그리기
         this.drawUI();
 
@@ -961,97 +1028,290 @@ class Game {
         });
     }
 
+    isLevelUnlocked(level: number): boolean {
+        if (level === 1) return true;
+        return this.levelRecords.has(level - 1);
+    }
+
+    drawContinuePrompt() {
+        // 배경
+        const bg = this.ctx.createLinearGradient(0, 0, 0, this.height);
+        bg.addColorStop(0, '#0d0f1e');
+        bg.addColorStop(1, '#1a0a2e');
+        this.ctx.fillStyle = bg;
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        // 타이틀
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = 'bold 32px Arial';
+        this.ctx.fillText('💎 GEM PUZZLE', this.width / 2, this.height * 0.22);
+
+        // 카드
+        const cardW = Math.min(360, this.width - 48);
+        const cardX = (this.width - cardW) / 2;
+        const cardY = this.height * 0.35;
+        const cardH = 200;
+
+        const cardGrad = this.ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+        cardGrad.addColorStop(0, '#1e2244');
+        cardGrad.addColorStop(1, '#141828');
+        this.ctx.fillStyle = cardGrad;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.fill();
+
+        this.ctx.strokeStyle = 'rgba(108,99,255,0.45)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.stroke();
+
+        // 저장 정보
+        this.ctx.fillStyle = '#b0baff';
+        this.ctx.font = '15px Arial';
+        this.ctx.fillText('진행 중인 게임이 있습니다', this.width / 2, cardY + 44);
+
+        this.ctx.fillStyle = '#FFD700';
+        this.ctx.font = 'bold 30px Arial';
+        this.ctx.fillText(`레벨 ${this.lastSavedLevel}`, this.width / 2, cardY + 92);
+
+        this.ctx.fillStyle = 'rgba(255,255,255,0.45)';
+        this.ctx.font = '14px Arial';
+        this.ctx.fillText('에서 이어하기', this.width / 2, cardY + 126);
+
+        // 버튼
+        const btnW = Math.min(140, (cardW - 36) / 2);
+        const btnH = 48;
+        const btnY = cardY + cardH - 64;
+        const continueX = this.width / 2 - btnW - 8;
+        const newGameX = this.width / 2 + 8;
+
+        // 이어하기 버튼 (퍼플 그라디언트)
+        const contGrad = this.ctx.createLinearGradient(continueX, btnY, continueX, btnY + btnH);
+        contGrad.addColorStop(0, '#7c73ff');
+        contGrad.addColorStop(1, '#4a43cc');
+        this.ctx.fillStyle = contGrad;
+        this.ctx.beginPath();
+        this.ctx.roundRect(continueX, btnY, btnW, btnH, 12);
+        this.ctx.fill();
+
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 15px Arial';
+        this.ctx.fillText('이어하기', continueX + btnW / 2, btnY + btnH / 2);
+
+        // 새로 시작 버튼 (투명)
+        this.ctx.fillStyle = 'rgba(255,255,255,0.08)';
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.22)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(newGameX, btnY, btnW, btnH, 12);
+        this.ctx.fill();
+        this.ctx.stroke();
+
+        this.ctx.fillStyle = 'rgba(255,255,255,0.7)';
+        this.ctx.font = 'bold 15px Arial';
+        this.ctx.fillText('새로 시작', newGameX + btnW / 2, btnY + btnH / 2);
+    }
+
     getLevelFromClick(clientX: number, clientY: number): number | null {
-        const fixedCellH = 60;
-        const startY = 80;
-        if (clientY < startY) return null;
+        const cellH = 72;
+        const headerH = 70;
+        if (clientY < headerH) return null;
 
         const cols = 5;
         const cellW = this.width / cols;
         const col = Math.floor(clientX / cellW);
-        const row = Math.floor((clientY - startY + this.levelSelectScrollY) / fixedCellH);
+        const row = Math.floor((clientY - headerH + this.levelSelectScrollY) / cellH);
         const level = row * cols + col + 1;
 
-        if (level >= 1 && level <= 100) return level;
+        if (level >= 1 && level <= 100 && this.isLevelUnlocked(level)) return level;
         return null;
     }
 
     drawLevelSelect() {
-        const fixedCellH = 60;
-        const startY = 80;
+        const cellH = 72;
+        const headerH = 70;
         const cols = 5;
         const cellW = this.width / cols;
+        const inset = 4;
 
-        // 배경
-        this.ctx.fillStyle = "rgba(0,0,0,0.95)";
+        // === 배경: 딥 스페이스 그라디언트 ===
+        const bg = this.ctx.createLinearGradient(0, 0, 0, this.height);
+        bg.addColorStop(0, '#0d0f1e');
+        bg.addColorStop(1, '#1a0a2e');
+        this.ctx.fillStyle = bg;
         this.ctx.fillRect(0, 0, this.width, this.height);
 
-        // 헤더 (스크롤 영역 위에 고정)
-        this.ctx.fillStyle = "#222";
-        this.ctx.fillRect(0, 0, this.width, startY);
+        // === 헤더 ===
+        const headerGrad = this.ctx.createLinearGradient(0, 0, 0, headerH);
+        headerGrad.addColorStop(0, '#1e2244');
+        headerGrad.addColorStop(1, '#141828');
+        this.ctx.fillStyle = headerGrad;
+        this.ctx.fillRect(0, 0, this.width, headerH);
 
-        this.ctx.fillStyle = "white";
-        this.ctx.textAlign = "center";
-        this.ctx.font = "bold 24px Arial";
-        this.ctx.textBaseline = "middle";
-        this.ctx.fillText("SELECT LEVEL", this.width / 2, 40);
+        // 헤더 하단 네온 구분선
+        const sepGrad = this.ctx.createLinearGradient(0, 0, this.width, 0);
+        sepGrad.addColorStop(0, 'rgba(108,99,255,0)');
+        sepGrad.addColorStop(0.3, 'rgba(108,99,255,0.9)');
+        sepGrad.addColorStop(0.7, 'rgba(255,101,132,0.9)');
+        sepGrad.addColorStop(1, 'rgba(255,101,132,0)');
+        this.ctx.fillStyle = sepGrad;
+        this.ctx.fillRect(0, headerH - 2, this.width, 2);
 
-        this.ctx.textAlign = "left";
-        this.ctx.font = "20px Arial";
-        this.ctx.fillText("< BACK", 10, 40);
+        // 뒤로가기 필 버튼
+        this.ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(8, 18, 76, 32, 16);
+        this.ctx.fill();
+        this.ctx.stroke();
 
-        // 스크롤 영역 클리핑
+        this.ctx.fillStyle = 'rgba(255,255,255,0.85)';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.font = '13px Arial';
+        this.ctx.fillText('← Back', 46, 34);
+
+        // 타이틀
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.font = 'bold 20px Arial';
+        this.ctx.fillText('SELECT LEVEL', this.width / 2, headerH / 2);
+
+        // === 스크롤 영역 클리핑 ===
         this.ctx.save();
         this.ctx.beginPath();
-        this.ctx.rect(0, startY, this.width, this.height - startY);
+        this.ctx.rect(0, headerH, this.width, this.height - headerH);
         this.ctx.clip();
 
         for (let i = 0; i < 100; i++) {
             const level = i + 1;
             const col = i % cols;
             const row = Math.floor(i / cols);
-            const cellTop = startY + row * fixedCellH - this.levelSelectScrollY;
-            const cellBot = cellTop + fixedCellH;
+            const cellTop = headerH + row * cellH - this.levelSelectScrollY;
+            const cellBot = cellTop + cellH;
 
-            // 화면 밖 셀 건너뜀
-            if (cellBot < startY || cellTop > this.height) continue;
+            if (cellBot < headerH || cellTop > this.height) continue;
 
             const cx = col * cellW + cellW / 2;
-            const cy = cellTop + fixedCellH / 2;
+            const cy = cellTop + cellH / 2;
 
             const record = this.levelRecords.get(level);
             const stars = record ? record.stars : 0;
+            const unlocked = this.isLevelUnlocked(level);
 
-            // 셀 배경
-            this.ctx.fillStyle = stars > 0 ? "#1a3a1a" : "#1a1a2a";
-            this.ctx.fillRect(col * cellW + 2, cellTop + 2, cellW - 4, fixedCellH - 4);
+            const rx = col * cellW + inset;
+            const ry = cellTop + inset;
+            const rw = cellW - inset * 2;
+            const rh = cellH - inset * 2;
+
+            if (!unlocked) {
+                // 잠긴 셀
+                const lockGrad = this.ctx.createLinearGradient(rx, ry, rx, ry + rh);
+                lockGrad.addColorStop(0, '#131318');
+                lockGrad.addColorStop(1, '#0a0a10');
+                this.ctx.fillStyle = lockGrad;
+                this.ctx.beginPath();
+                this.ctx.roundRect(rx, ry, rw, rh, 10);
+                this.ctx.fill();
+
+                this.ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+                this.ctx.lineWidth = 1;
+                this.ctx.beginPath();
+                this.ctx.roundRect(rx, ry, rw, rh, 10);
+                this.ctx.stroke();
+
+                this.ctx.textAlign = 'center';
+                this.ctx.textBaseline = 'middle';
+                this.ctx.fillStyle = 'rgba(255,255,255,0.18)';
+                this.ctx.font = '12px Arial';
+                this.ctx.fillText(`${level}`, cx, cy - 9);
+                this.ctx.font = '15px Arial';
+                this.ctx.fillText('🔒', cx, cy + 9);
+                continue;
+            }
+
+            // 3성 셀: 황금 글로우
+            if (stars === 3) {
+                this.ctx.shadowColor = 'rgba(255,200,50,0.55)';
+                this.ctx.shadowBlur = 14;
+            }
+
+            // 셀 그라디언트 배경
+            const grad = this.ctx.createLinearGradient(rx, ry, rx, ry + rh);
+            if (stars === 3) {
+                grad.addColorStop(0, '#3d2800');
+                grad.addColorStop(1, '#1e1400');
+            } else if (stars === 2) {
+                grad.addColorStop(0, '#2a2010');
+                grad.addColorStop(1, '#141008');
+            } else if (stars === 1) {
+                grad.addColorStop(0, '#1c3020');
+                grad.addColorStop(1, '#0e180f');
+            } else {
+                grad.addColorStop(0, '#1e2244');
+                grad.addColorStop(1, '#121628');
+            }
+            this.ctx.fillStyle = grad;
+            this.ctx.beginPath();
+            this.ctx.roundRect(rx, ry, rw, rh, 10);
+            this.ctx.fill();
+
+            this.ctx.shadowBlur = 0;
+
+            // 셀 테두리
+            this.ctx.lineWidth = 1;
+            if (stars === 3) {
+                this.ctx.strokeStyle = 'rgba(255,200,50,0.65)';
+            } else if (stars > 0) {
+                this.ctx.strokeStyle = 'rgba(100,210,100,0.35)';
+            } else {
+                this.ctx.strokeStyle = 'rgba(100,120,255,0.25)';
+            }
+            this.ctx.beginPath();
+            this.ctx.roundRect(rx, ry, rw, rh, 10);
+            this.ctx.stroke();
 
             // 레벨 번호
-            this.ctx.fillStyle = "white";
-            this.ctx.textAlign = "center";
-            this.ctx.textBaseline = "middle";
-            this.ctx.font = "bold 14px Arial";
-            this.ctx.fillText(`${level}`, cx, cy - 10);
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            const textY = stars > 0 ? cy - 9 : cy;
 
-            // 별 표시
+            if (stars === 3) {
+                this.ctx.fillStyle = '#FFD700';
+            } else if (stars > 0) {
+                this.ctx.fillStyle = '#90EE90';
+            } else {
+                this.ctx.fillStyle = '#b0baff';
+            }
+            this.ctx.font = 'bold 15px Arial';
+            this.ctx.fillText(`${level}`, cx, textY);
+
+            // 별 표시 (채운 별 + 빈 별)
             if (stars > 0) {
-                this.ctx.fillStyle = "#FFD700";
-                this.ctx.font = "12px Arial";
-                this.ctx.fillText("★".repeat(stars), cx, cy + 12);
+                this.ctx.fillStyle = '#FFD700';
+                this.ctx.font = '11px Arial';
+                this.ctx.fillText('★'.repeat(stars) + '☆'.repeat(3 - stars), cx, cy + 10);
             }
         }
 
         this.ctx.restore();
 
-        // 스크롤바 표시
-        const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+        // === 스크롤바 ===
+        const totalH = 20 * cellH;
+        const maxScrollY = Math.max(0, (headerH + totalH) - this.height);
         if (maxScrollY > 0) {
-            const trackH = this.height - startY;
-            const thumbH = Math.max(30, trackH * trackH / (startY + 20 * fixedCellH));
-            const thumbY = startY + (this.levelSelectScrollY / maxScrollY) * (trackH - thumbH);
-            this.ctx.fillStyle = "rgba(255,255,255,0.3)";
+            const trackH = this.height - headerH - 8;
+            const thumbRatio = (this.height - headerH) / (headerH + totalH);
+            const thumbH = Math.max(28, trackH * thumbRatio);
+            const thumbY = headerH + 4 + (this.levelSelectScrollY / maxScrollY) * (trackH - thumbH);
+            this.ctx.fillStyle = 'rgba(255,255,255,0.22)';
             this.ctx.beginPath();
-            this.ctx.roundRect(this.width - 6, thumbY, 4, thumbH, 2);
+            this.ctx.roundRect(this.width - 5, thumbY, 3, thumbH, 2);
             this.ctx.fill();
         }
     }
