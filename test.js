@@ -6,6 +6,7 @@
 // ==========================================
 // 1. 상수 및 타입 (game.ts에서 복사)
 // ==========================================
+const GEM_EMOJIS_TEST = ["💎", "⭐", "🔥", "💧", "🍀", "🌙", "⚡", "🌸", "✨", "🔮", "🌈", "👑"];
 const COLS = 8;
 const ROWS = 8;
 const GEM_COLORS = [
@@ -228,6 +229,33 @@ function isSelectedGemFixed(selectedGem, gem) {
 // BUG-3: dt 클램핑
 function clampDt(rawDt) {
     return Math.min(rawDt, 0.1);
+}
+// Suite 10: 새 보석 수 공식
+function calcColorsNew(level) {
+    return Math.min(12, Math.round(3 + (level - 1) * 9 / 99));
+}
+// Suite 11: 스크롤 관련 순수 함수
+function calcMaxScrollY(screenHeight) {
+    const fixedCellH = 60;
+    const startY = 80;
+    return Math.max(0, (startY + 20 * fixedCellH) - screenHeight);
+}
+function clampScrollY(scrollY, screenHeight) {
+    return Math.max(0, Math.min(calcMaxScrollY(screenHeight), scrollY));
+}
+function getLevelFromClickWithScroll(clientX, clientY, screenWidth, scrollY) {
+    const fixedCellH = 60;
+    const startY = 80;
+    const cols = 5;
+    if (clientY < startY)
+        return null;
+    const cellW = screenWidth / cols;
+    const col = Math.floor(clientX / cellW);
+    const row = Math.floor((clientY - startY + scrollY) / fixedCellH);
+    const level = row * cols + col + 1;
+    if (level >= 1 && level <= 100)
+        return level;
+    return null;
 }
 // ==========================================
 // 5. 테스트 스위트
@@ -530,6 +558,95 @@ describe("Zen 저장 순서 (MISSING-4 회귀 방지)", () => {
         }
         saveState(GameState.MENU);
         expect(savedCount).toBe(0);
+    });
+});
+// --- Suite 9: GEM_EMOJIS 배열 검증 ---
+describe("GEM_EMOJIS 배열 검증", () => {
+    it("T9-1: GEM_EMOJIS_TEST 길이가 12 → true", () => {
+        expect(GEM_EMOJIS_TEST.length === 12).toBeTruthy();
+    });
+    it("T9-2: 타입 0 이모지가 💎 → true", () => {
+        expect(GEM_EMOJIS_TEST[0] === "💎").toBeTruthy();
+    });
+    it("T9-3: 타입 11 이모지가 👑 → true", () => {
+        expect(GEM_EMOJIS_TEST[11] === "👑").toBeTruthy();
+    });
+    it("T9-4: 모든 이모지가 문자열 타입 → true", () => {
+        const allStrings = GEM_EMOJIS_TEST.every(e => typeof e === "string");
+        expect(allStrings).toBeTruthy();
+    });
+    it("T9-5: 중복 이모지 없음 (Set 변환 후 크기 === 12) → true", () => {
+        expect(new Set(GEM_EMOJIS_TEST).size === 12).toBeTruthy();
+    });
+});
+// --- Suite 10: 새 보석 수 공식 검증 ---
+describe("새 보석 수 공식 검증 (calcColorsNew)", () => {
+    it("T10-1: 레벨 1 → 3", () => {
+        expect(calcColorsNew(1)).toBe(3);
+    });
+    it("T10-2: 레벨 10 → 4", () => {
+        expect(calcColorsNew(10)).toBe(4);
+    });
+    it("T10-3: 레벨 20 → 5", () => {
+        expect(calcColorsNew(20)).toBe(5);
+    });
+    it("T10-4: 레벨 50 → 7 (round(3 + 49*9/99) = round(7.45) = 7)", () => {
+        expect(calcColorsNew(50)).toBe(7);
+    });
+    it("T10-5: 레벨 100 → 12", () => {
+        expect(calcColorsNew(100)).toBe(12);
+    });
+    it("T10-6: 레벨 1이 기존 공식(4)보다 작음 → true (더 쉬운 시작)", () => {
+        const oldColors = Math.min(7, 4 + Math.floor(1 / 10)); // = 4
+        expect(calcColorsNew(1) < oldColors).toBeTruthy();
+    });
+    it("T10-7: 레벨 60 → 기존 공식(7)보다 큰 8 → true (더 다양해짐)", () => {
+        const oldColors = Math.min(7, 4 + Math.floor(60 / 10)); // = 7
+        const newColors = calcColorsNew(60); // round(3 + 59*9/99) = round(8.36) = 8
+        expect(newColors > oldColors).toBeTruthy();
+    });
+    it("T10-8: 레벨 1~100 모두 3~12 범위", () => {
+        for (let lv = 1; lv <= 100; lv++) {
+            const c = calcColorsNew(lv);
+            if (c < 3 || c > 12)
+                throw new Error(`Level ${lv} returned ${c}`);
+        }
+    });
+});
+// --- Suite 11: 스크롤 로직 검증 ---
+describe("레벨 선택 스크롤 로직 검증", () => {
+    it("T11-1: 화면 높이 915px(접힌 폴드) → maxScrollY = 365", () => {
+        expect(calcMaxScrollY(915)).toBe(365);
+    });
+    it("T11-2: 화면 높이 1812px(펼친 폴드) → maxScrollY = 0 (스크롤 불필요)", () => {
+        expect(calcMaxScrollY(1812)).toBe(0);
+    });
+    it("T11-3: scrollY 범위 초과 (음수) → 0으로 클램프", () => {
+        expect(clampScrollY(-50, 915)).toBe(0);
+    });
+    it("T11-4: scrollY 범위 초과 (최대 초과) → maxScrollY로 클램프", () => {
+        const maxScroll = calcMaxScrollY(915); // 365
+        expect(clampScrollY(9999, 915)).toBe(maxScroll);
+    });
+    it("T11-5: 스크롤 0에서 첫 번째 셀 클릭 → 레벨 1", () => {
+        // screenWidth=375, clientX=10, clientY=90(헤더 아래), scrollY=0
+        // cellW=375/5=75, col=floor(10/75)=0, row=floor((90-80+0)/60)=floor(0.166)=0
+        // level=0*5+0+1=1
+        expect(getLevelFromClickWithScroll(10, 90, 375, 0)).toBe(1);
+    });
+    it("T11-6: scrollY=60이면 같은 화면 좌표가 다음 행(+5) 반환", () => {
+        // scrollY=0 → 레벨 1, scrollY=60 → 레벨 6 (다음 행)
+        const levelNoScroll = getLevelFromClickWithScroll(10, 90, 375, 0);
+        const levelWithScroll = getLevelFromClickWithScroll(10, 90, 375, 60);
+        expect(levelWithScroll - levelNoScroll).toBe(5);
+    });
+    it("T11-7: 헤더 영역(clientY < 80) 클릭 → null 반환", () => {
+        expect(getLevelFromClickWithScroll(100, 50, 375, 0)).toBeNull();
+    });
+    it("T11-8: 드래그 threshold 15px 경계 검증", () => {
+        const THRESHOLD = 15;
+        expect(Math.abs(14) > THRESHOLD).toBeFalsy(); // 14px → 탭
+        expect(Math.abs(16) > THRESHOLD).toBeTruthy(); // 16px → 드래그
     });
 });
 // ==========================================

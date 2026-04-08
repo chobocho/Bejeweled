@@ -25,6 +25,20 @@ const GEM_COLORS = [
     "#00FFFF", // Cyan
     "#FFFFFF" // White
 ];
+const GEM_EMOJIS = [
+    "💎", // 0 - 다이아몬드
+    "⭐", // 1 - 별
+    "🔥", // 2 - 불꽃
+    "💧", // 3 - 물방울
+    "🍀", // 4 - 네잎클로버
+    "🌙", // 5 - 초승달
+    "⚡", // 6 - 번개
+    "🌸", // 7 - 벚꽃
+    "✨", // 8 - 반짝임
+    "🔮", // 9 - 수정구슬
+    "🌈", // 10 - 무지개
+    "👑", // 11 - 왕관
+];
 var GameState;
 (function (GameState) {
     GameState[GameState["MENU"] = 0] = "MENU";
@@ -192,6 +206,9 @@ class Game {
         this.touchStartX = 0;
         this.touchStartY = 0;
         this.activeGem = null; // 드래그 시작한 보석
+        this.levelSelectScrollY = 0;
+        this.levelSelectPrevTouchY = 0;
+        this.isDraggingLevelSelect = false;
         this.canvas = document.getElementById("gameCanvas");
         this.ctx = this.canvas.getContext("2d");
         this.db = new DBManager();
@@ -207,7 +224,22 @@ class Game {
         }, { passive: false });
         // 터치 이동 (스와이프 감지용)
         this.canvas.addEventListener("touchmove", (e) => {
-            e.preventDefault(); // 스크롤 방지
+            e.preventDefault();
+            if (this.state !== GameState.LEVEL_SELECT)
+                return;
+            const touch = e.touches[0];
+            const dy = touch.clientY - this.touchStartY;
+            if (Math.abs(dy) > 15) {
+                this.isDraggingLevelSelect = true;
+            }
+            if (this.isDraggingLevelSelect) {
+                const delta = touch.clientY - this.levelSelectPrevTouchY;
+                const fixedCellH = 60;
+                const startY = 80;
+                const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+                this.levelSelectScrollY = Math.max(0, Math.min(maxScrollY, this.levelSelectScrollY - delta));
+            }
+            this.levelSelectPrevTouchY = touch.clientY;
         }, { passive: false });
         // 터치 끝 (스와이프 완료 처리)
         this.canvas.addEventListener("touchend", (e) => {
@@ -223,6 +255,15 @@ class Game {
         this.canvas.addEventListener("mouseup", (e) => {
             this.handleInputUp(e.clientX, e.clientY);
         });
+        this.canvas.addEventListener("wheel", (e) => {
+            if (this.state !== GameState.LEVEL_SELECT)
+                return;
+            e.preventDefault();
+            const fixedCellH = 60;
+            const startY = 80;
+            const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+            this.levelSelectScrollY = Math.max(0, Math.min(maxScrollY, this.levelSelectScrollY + e.deltaY * 0.5));
+        }, { passive: false });
         this.init().then(() => {
             this.loop(0);
         });
@@ -270,8 +311,8 @@ class Game {
         this.maxTime = Math.max(30, 60 - Math.floor((level - 1) / 5) * 2);
         this.timeLeft = this.maxTime;
         this.targetScore = level * 1500;
-        // 색상 수 조절: 레벨 10까지 4색, 20까지 5색...
-        const colors = Math.min(GEM_COLORS.length, 4 + Math.floor(level / 10));
+        // 색상 수 조절: 레벨 1→3종, 레벨 100→12종
+        const colors = Math.min(GEM_EMOJIS.length, Math.round(3 + (level - 1) * 9 / 99));
         this.initGrid(colors);
     }
     startZen() {
@@ -284,7 +325,7 @@ class Game {
             }
             else {
                 this.score = 0;
-                this.initGrid(5); // Zen is moderate difficulty
+                this.initGrid(6); // Zen mode - moderate difficulty
             }
         });
     }
@@ -306,7 +347,7 @@ class Game {
         for (let y = 0; y < ROWS; y++) {
             this.grid[y] = [];
             for (let x = 0; x < COLS; x++) {
-                const gem = this.createGem(x, y, 7); // Max colors safe
+                const gem = this.createGem(x, y, GEM_EMOJIS.length);
                 gem.type = typeBoard[y][x];
                 this.grid[y][x] = gem;
             }
@@ -355,6 +396,8 @@ class Game {
     handleInputDown(clientX, clientY) {
         if (this.isProcessing)
             return;
+        this.levelSelectPrevTouchY = clientY;
+        this.isDraggingLevelSelect = false;
         // 메뉴 버튼 처리 등은 좌표 변환 없이 기존 로직과 유사하게 처리
         if (this.state === GameState.MENU) {
             if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
@@ -371,12 +414,10 @@ class Game {
         if (this.state === GameState.LEVEL_SELECT) {
             if (clientX < 80 && clientY < 60) {
                 this.state = GameState.MENU;
+                this.levelSelectScrollY = 0;
                 return;
             }
-            const level = this.getLevelFromClick(clientX, clientY);
-            if (level !== null) {
-                this.startPuzzle(level);
-            }
+            // 탭/드래그 구분은 touchend(handleInputUp)에서 처리하므로 여기서는 아무것도 안 함
             return;
         }
         if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
@@ -413,6 +454,24 @@ class Game {
         }
     }
     handleInputUp(clientX, clientY) {
+        // 레벨 선택 화면: 드래그 아니면 탭으로 레벨 선택
+        if (this.state === GameState.LEVEL_SELECT) {
+            if (!this.isDraggingLevelSelect) {
+                if (clientX < 80 && clientY < 60) {
+                    this.state = GameState.MENU;
+                    this.levelSelectScrollY = 0;
+                }
+                else {
+                    const level = this.getLevelFromClick(clientX, clientY);
+                    if (level !== null) {
+                        this.startPuzzle(level);
+                    }
+                }
+            }
+            this.isDraggingLevelSelect = false;
+            this.activeGem = null;
+            return;
+        }
         if (!this.activeGem || this.isProcessing)
             return;
         const endPos = this.getGridPos(clientX, clientY);
@@ -546,7 +605,7 @@ class Game {
     applyGravity() {
         let colors = 5;
         if (this.state === GameState.PLAYING_PUZZLE) {
-            colors = Math.min(GEM_COLORS.length, 4 + Math.floor(this.level / 10));
+            colors = Math.min(GEM_EMOJIS.length, Math.round(3 + (this.level - 1) * 9 / 99));
         }
         for (let x = 0; x < COLS; x++) {
             // 살아있는 보석만 아래쪽부터 모음
@@ -682,31 +741,23 @@ class Game {
         }
     }
     drawGem(x, y, type, size, isSelected) {
+        var _a;
         const px = this.offsetX + x * size;
         const py = this.offsetY + y * size;
-        const pad = size * 0.1;
-        this.ctx.fillStyle = GEM_COLORS[type];
-        // Shape variations based on type (optional, for accessibility)
-        this.ctx.beginPath();
-        if (type % 2 === 0) {
-            // Circle-ish
-            this.ctx.arc(px + size / 2, py + size / 2, size / 2 - pad, 0, Math.PI * 2);
-        }
-        else {
-            // Rect
-            this.ctx.rect(px + pad, py + pad, size - pad * 2, size - pad * 2);
-        }
-        this.ctx.fill();
-        // Shine
-        this.ctx.fillStyle = "rgba(255,255,255,0.3)";
-        this.ctx.beginPath();
-        this.ctx.arc(px + size / 3, py + size / 3, size / 6, 0, Math.PI * 2);
-        this.ctx.fill();
+        // 선택 하이라이트 (이모지 뒤에 먼저 그림)
         if (isSelected) {
+            this.ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
+            this.ctx.fillRect(px + 2, py + 2, size - 4, size - 4);
             this.ctx.strokeStyle = "white";
             this.ctx.lineWidth = 3;
             this.ctx.strokeRect(px, py, size, size);
         }
+        // 이모지 렌더링
+        const emoji = (_a = GEM_EMOJIS[type]) !== null && _a !== void 0 ? _a : "💎";
+        this.ctx.font = `${size * 0.75}px sans-serif`;
+        this.ctx.textAlign = "center";
+        this.ctx.textBaseline = "middle";
+        this.ctx.fillText(emoji, px + size / 2, py + size / 2);
     }
     drawUI() {
         // UI 영역의 높이
@@ -804,63 +855,90 @@ class Game {
         });
     }
     startLevelSelect() {
+        this.levelSelectScrollY = 0;
+        this.isDraggingLevelSelect = false;
         this.loadLevelRecords().then(() => {
             this.state = GameState.LEVEL_SELECT;
         });
     }
     getLevelFromClick(clientX, clientY) {
-        const cols = 5;
-        const rows = 20; // 100 levels / 5 cols
+        const fixedCellH = 60;
         const startY = 80;
-        const cellW = this.width / cols;
-        const cellH = (this.height - startY) / rows;
         if (clientY < startY)
             return null;
+        const cols = 5;
+        const cellW = this.width / cols;
         const col = Math.floor(clientX / cellW);
-        const row = Math.floor((clientY - startY) / cellH);
+        const row = Math.floor((clientY - startY + this.levelSelectScrollY) / fixedCellH);
         const level = row * cols + col + 1;
         if (level >= 1 && level <= 100)
             return level;
         return null;
     }
     drawLevelSelect() {
-        this.ctx.fillStyle = "rgba(0,0,0,0.9)";
+        const fixedCellH = 60;
+        const startY = 80;
+        const cols = 5;
+        const cellW = this.width / cols;
+        // 배경
+        this.ctx.fillStyle = "rgba(0,0,0,0.95)";
         this.ctx.fillRect(0, 0, this.width, this.height);
+        // 헤더 (스크롤 영역 위에 고정)
+        this.ctx.fillStyle = "#222";
+        this.ctx.fillRect(0, 0, this.width, startY);
         this.ctx.fillStyle = "white";
         this.ctx.textAlign = "center";
         this.ctx.font = "bold 24px Arial";
+        this.ctx.textBaseline = "middle";
         this.ctx.fillText("SELECT LEVEL", this.width / 2, 40);
-        // 뒤로가기
         this.ctx.textAlign = "left";
         this.ctx.font = "20px Arial";
         this.ctx.fillText("< BACK", 10, 40);
-        const cols = 5;
-        const rows = 20;
-        const startY = 80;
-        const cellW = this.width / cols;
-        const cellH = (this.height - startY) / rows;
+        // 스크롤 영역 클리핑
+        this.ctx.save();
+        this.ctx.beginPath();
+        this.ctx.rect(0, startY, this.width, this.height - startY);
+        this.ctx.clip();
         for (let i = 0; i < 100; i++) {
             const level = i + 1;
             const col = i % cols;
             const row = Math.floor(i / cols);
+            const cellTop = startY + row * fixedCellH - this.levelSelectScrollY;
+            const cellBot = cellTop + fixedCellH;
+            // 화면 밖 셀 건너뜀
+            if (cellBot < startY || cellTop > this.height)
+                continue;
             const cx = col * cellW + cellW / 2;
-            const cy = startY + row * cellH + cellH / 2;
+            const cy = cellTop + fixedCellH / 2;
             const record = this.levelRecords.get(level);
             const stars = record ? record.stars : 0;
-            // 배경
+            // 셀 배경
             this.ctx.fillStyle = stars > 0 ? "#1a3a1a" : "#1a1a2a";
-            this.ctx.fillRect(col * cellW + 2, startY + row * cellH + 2, cellW - 4, cellH - 4);
+            this.ctx.fillRect(col * cellW + 2, cellTop + 2, cellW - 4, fixedCellH - 4);
             // 레벨 번호
             this.ctx.fillStyle = "white";
             this.ctx.textAlign = "center";
-            this.ctx.font = `${Math.min(cellW, cellH) * 0.3}px Arial`;
-            this.ctx.fillText(`${level}`, cx, cy - cellH * 0.1);
+            this.ctx.textBaseline = "middle";
+            this.ctx.font = "bold 14px Arial";
+            this.ctx.fillText(`${level}`, cx, cy - 10);
             // 별 표시
             if (stars > 0) {
                 this.ctx.fillStyle = "#FFD700";
-                this.ctx.font = `${Math.min(cellW, cellH) * 0.25}px Arial`;
-                this.ctx.fillText("★".repeat(stars), cx, cy + cellH * 0.25);
+                this.ctx.font = "12px Arial";
+                this.ctx.fillText("★".repeat(stars), cx, cy + 12);
             }
+        }
+        this.ctx.restore();
+        // 스크롤바 표시
+        const maxScrollY = Math.max(0, (startY + 20 * fixedCellH) - this.height);
+        if (maxScrollY > 0) {
+            const trackH = this.height - startY;
+            const thumbH = Math.max(30, trackH * trackH / (startY + 20 * fixedCellH));
+            const thumbY = startY + (this.levelSelectScrollY / maxScrollY) * (trackH - thumbH);
+            this.ctx.fillStyle = "rgba(255,255,255,0.3)";
+            this.ctx.beginPath();
+            this.ctx.roundRect(this.width - 6, thumbY, 4, thumbH, 2);
+            this.ctx.fill();
         }
     }
 }
