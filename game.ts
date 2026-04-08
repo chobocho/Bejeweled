@@ -163,8 +163,15 @@ class DBManager {
 
     async savePuzzleRecord(record: PuzzleRecord) {
         if (!this.db) return;
+        // 기존 기록과 비교해 최고 별수·최고 점수만 저장
+        const existing = await this.getPuzzleRecord(record.level);
+        const best: PuzzleRecord = {
+            level: record.level,
+            stars: Math.max(record.stars, existing?.stars ?? 0),
+            highScore: Math.max(record.highScore, existing?.highScore ?? 0)
+        };
         const tx = this.db.transaction("puzzle_records", "readwrite");
-        tx.objectStore("puzzle_records").put(record);
+        tx.objectStore("puzzle_records").put(best);
     }
 
     async getPuzzleRecord(level: number): Promise<PuzzleRecord | undefined> {
@@ -252,6 +259,10 @@ class Game {
     // Chain combo feedback
     comboChain: number = 0;
     comboDisplayTimer: number = 0;
+
+    // In-game menu / confirm dialog
+    confirmAction: 'retry' | 'levelSelect' | null = null;
+    showConfirm: boolean = false;
 
     // Level select data
     levelRecords: Map<number, PuzzleRecord> = new Map();
@@ -394,8 +405,8 @@ class Game {
         // 목표 점수: 이차 곡선으로 급성장 (연쇄 플레이 필요)
         this.targetScore = Math.floor(4000 + 150 * level + 5 * level * level);
 
-        // 색상 수: 10레벨마다 1종 추가 (레벨 1→3종, 레벨 91+→12종)
-        const colors = Math.min(GEM_EMOJIS.length, Math.floor(3 + (level - 1) / 10));
+        // 색상 수: 레벨 1→5종, 10레벨마다 1종 추가 (레벨 71+→12종)
+        const colors = Math.min(GEM_EMOJIS.length, Math.floor(5 + (level - 1) / 10));
         this.initGrid(colors);
     }
 
@@ -540,15 +551,64 @@ class Game {
             return;
         }
 
-        // UI 버튼 처리 (Puzzle: 일시정지, Zen: 나가기)
-        // 우측 상단 영역 터치 시
+        // UI 버튼 처리 (Puzzle: 일시정지 메뉴, Zen: 나가기)
         if (this.state === GameState.PAUSED) {
-            this.state = GameState.PLAYING_PUZZLE;
+            if (this.showConfirm) {
+                // 확인 다이얼로그 버튼 히트 테스트
+                const cardW = Math.min(280, this.width - 64);
+                const cardX = (this.width - cardW) / 2;
+                const cardH = 180;
+                const cardY = (this.height - cardH) / 2;
+                const btnW = (cardW - 48) / 2;
+                const btnH = 44;
+                const btnY = cardY + cardH - 56;
+                const cancelX = cardX + 16;
+                const confirmX = cardX + cardW / 2 + 8;
+                if (clientY >= btnY && clientY <= btnY + btnH) {
+                    if (clientX >= cancelX && clientX <= cancelX + btnW) {
+                        this.showConfirm = false;
+                    } else if (clientX >= confirmX && clientX <= confirmX + btnW) {
+                        this.showConfirm = false;
+                        const action = this.confirmAction;
+                        this.confirmAction = null;
+                        if (action === 'retry') {
+                            this.startPuzzle(this.level);
+                        } else if (action === 'levelSelect') {
+                            this.startLevelSelect();
+                        }
+                    }
+                }
+            } else {
+                // 인게임 메뉴 버튼 히트 테스트
+                const cardW = Math.min(300, this.width - 48);
+                const cardX = (this.width - cardW) / 2;
+                const cardH = 280;
+                const cardY = (this.height - cardH) / 2;
+                const btnW = cardW - 40;
+                const btnH = 50;
+                const btnX = cardX + 20;
+                const resumeY = cardY + 90;
+                const retryY = resumeY + btnH + 12;
+                const selectY = retryY + btnH + 12;
+                if (clientX >= btnX && clientX <= btnX + btnW) {
+                    if (clientY >= resumeY && clientY <= resumeY + btnH) {
+                        this.state = GameState.PLAYING_PUZZLE;
+                    } else if (clientY >= retryY && clientY <= retryY + btnH) {
+                        this.confirmAction = 'retry';
+                        this.showConfirm = true;
+                    } else if (clientY >= selectY && clientY <= selectY + btnH) {
+                        this.confirmAction = 'levelSelect';
+                        this.showConfirm = true;
+                    }
+                }
+            }
             return;
         }
 
         if (clientX > this.width - 80 && clientY < this.offsetY) {
             if (this.state === GameState.PLAYING_PUZZLE) {
+                this.showConfirm = false;
+                this.confirmAction = null;
                 this.state = GameState.PAUSED;
             } else if (this.state === GameState.PLAYING_ZEN) {
                 this.saveState(); // PLAYING_ZEN 상태일 때 먼저 저장
@@ -752,7 +812,7 @@ class Game {
     applyGravity() {
         let colors = 5;
         if (this.state === GameState.PLAYING_PUZZLE) {
-            colors = Math.min(GEM_EMOJIS.length, Math.floor(3 + (this.level - 1) / 10));
+            colors = Math.min(GEM_EMOJIS.length, Math.floor(5 + (this.level - 1) / 10));
         }
         for (let x = 0; x < COLS; x++) {
             // 살아있는 보석만 아래쪽부터 모음
@@ -906,7 +966,8 @@ class Game {
 
         // 5. 오버레이(일시정지, 게임오버 등) 그리기
         if (this.state === GameState.PAUSED) {
-            this.drawOverlay("PAUSED", "Click to Resume");
+            this.drawGameMenu();
+            if (this.showConfirm) this.drawConfirmDialog();
         } else if (this.state === GameState.GAME_OVER) {
             this.drawOverlay("GAME OVER", "Click to Menu");
         } else if (this.state === GameState.LEVEL_CLEAR) {
@@ -930,6 +991,152 @@ class Game {
             this.ctx.shadowBlur = 0;
             this.ctx.restore();
         }
+    }
+
+    drawGameMenu() {
+        // 반투명 배경
+        this.ctx.fillStyle = 'rgba(0,0,0,0.75)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        const cardW = Math.min(300, this.width - 48);
+        const cardX = (this.width - cardW) / 2;
+        const cardH = 280;
+        const cardY = (this.height - cardH) / 2;
+
+        // 카드 배경
+        const cardGrad = this.ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+        cardGrad.addColorStop(0, '#1e2244');
+        cardGrad.addColorStop(1, '#141828');
+        this.ctx.fillStyle = cardGrad;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(108,99,255,0.4)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.stroke();
+
+        // 타이틀
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = '#ffffff';
+        this.ctx.font = 'bold 22px Arial';
+        this.ctx.fillText('⏸  일시 정지', this.width / 2, cardY + 36);
+
+        // 레벨·점수 정보
+        this.ctx.fillStyle = '#b0baff';
+        this.ctx.font = '14px Arial';
+        this.ctx.fillText(`레벨 ${this.level}  |  점수 ${this.score}`, this.width / 2, cardY + 64);
+
+        const btnW = cardW - 40;
+        const btnH = 50;
+        const btnX = cardX + 20;
+        const resumeY = cardY + 90;
+        const retryY = resumeY + btnH + 12;
+        const selectY = retryY + btnH + 12;
+
+        // 계속하기 (초록)
+        const rg = this.ctx.createLinearGradient(btnX, resumeY, btnX, resumeY + btnH);
+        rg.addColorStop(0, '#4CAF50'); rg.addColorStop(1, '#2e7d32');
+        this.ctx.fillStyle = rg;
+        this.ctx.beginPath();
+        this.ctx.roundRect(btnX, resumeY, btnW, btnH, 12);
+        this.ctx.fill();
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 16px Arial';
+        this.ctx.fillText('▶  계속하기', this.width / 2, resumeY + btnH / 2);
+
+        // 다시하기 (주황)
+        const rg2 = this.ctx.createLinearGradient(btnX, retryY, btnX, retryY + btnH);
+        rg2.addColorStop(0, '#FF9800'); rg2.addColorStop(1, '#e65100');
+        this.ctx.fillStyle = rg2;
+        this.ctx.beginPath();
+        this.ctx.roundRect(btnX, retryY, btnW, btnH, 12);
+        this.ctx.fill();
+        this.ctx.fillStyle = 'white';
+        this.ctx.fillText('↺  다시하기', this.width / 2, retryY + btnH / 2);
+
+        // 레벨 선택 (파랑)
+        const rg3 = this.ctx.createLinearGradient(btnX, selectY, btnX, selectY + btnH);
+        rg3.addColorStop(0, '#2196F3'); rg3.addColorStop(1, '#0d47a1');
+        this.ctx.fillStyle = rg3;
+        this.ctx.beginPath();
+        this.ctx.roundRect(btnX, selectY, btnW, btnH, 12);
+        this.ctx.fill();
+        this.ctx.fillStyle = 'white';
+        this.ctx.fillText('☰  레벨 선택', this.width / 2, selectY + btnH / 2);
+    }
+
+    drawConfirmDialog() {
+        // 추가 어두운 배경
+        this.ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        const cardW = Math.min(280, this.width - 64);
+        const cardX = (this.width - cardW) / 2;
+        const cardH = 180;
+        const cardY = (this.height - cardH) / 2;
+
+        const cg = this.ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+        cg.addColorStop(0, '#252840'); cg.addColorStop(1, '#1a1c30');
+        this.ctx.fillStyle = cg;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.fill();
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cardX, cardY, cardW, cardH, 16);
+        this.ctx.stroke();
+
+        // 메시지
+        this.ctx.textAlign = 'center';
+        this.ctx.textBaseline = 'middle';
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 17px Arial';
+        const title = this.confirmAction === 'retry'
+            ? `레벨 ${this.level}을 다시 시작할까요?`
+            : '레벨 선택으로 이동할까요?';
+        this.ctx.fillText(title, this.width / 2, cardY + 42);
+        this.ctx.fillStyle = 'rgba(255,180,50,0.85)';
+        this.ctx.font = '13px Arial';
+        this.ctx.fillText('현재 진행 상황이 초기화됩니다', this.width / 2, cardY + 72);
+
+        // 버튼
+        const btnW = (cardW - 48) / 2;
+        const btnH = 44;
+        const btnY = cardY + cardH - 56;
+        const cancelX = cardX + 16;
+        const confirmX = cardX + cardW / 2 + 8;
+
+        // 취소 (투명)
+        this.ctx.fillStyle = 'rgba(255,255,255,0.1)';
+        this.ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        this.ctx.lineWidth = 1;
+        this.ctx.beginPath();
+        this.ctx.roundRect(cancelX, btnY, btnW, btnH, 10);
+        this.ctx.fill();
+        this.ctx.stroke();
+        this.ctx.fillStyle = 'rgba(255,255,255,0.75)';
+        this.ctx.font = 'bold 14px Arial';
+        this.ctx.fillText('취소', cancelX + btnW / 2, btnY + btnH / 2);
+
+        // 확인 (액션별 색상)
+        const c1 = this.confirmAction === 'retry' ? '#FF5722' : '#2196F3';
+        const c2 = this.confirmAction === 'retry' ? '#b71c1c' : '#0d47a1';
+        const fg = this.ctx.createLinearGradient(confirmX, btnY, confirmX, btnY + btnH);
+        fg.addColorStop(0, c1); fg.addColorStop(1, c2);
+        this.ctx.fillStyle = fg;
+        this.ctx.beginPath();
+        this.ctx.roundRect(confirmX, btnY, btnW, btnH, 10);
+        this.ctx.fill();
+        this.ctx.fillStyle = 'white';
+        this.ctx.font = 'bold 14px Arial';
+        this.ctx.fillText(
+            this.confirmAction === 'retry' ? '다시하기' : '이동',
+            confirmX + btnW / 2, btnY + btnH / 2
+        );
     }
 
     drawGem(x: number, y: number, type: number, size: number, isSelected: boolean) {
