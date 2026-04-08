@@ -1,5 +1,51 @@
 # 변경 이력 (History)
 
+## 2026-04-09 (8차)
+
+### 기능 개선: Chain 가독성 · 컬러 타임바 · 레벨 클리어 팝업 · 레벨 시작 팝업
+
+#### 1. Chain 효과 가독성 개선
+
+- 기존: 텍스트만 (배경 없음, gem 위에서 읽기 어려움)
+- 신규: 반투명 pill 배경 `rgba(0,0,0,0.65)` + 컬러 테두리(gold/red) + 강화된 글로우 `shadowBlur=24`
+- 폰트 크기 `min(56,28+chain*5)` → `min(52,26+chain*5)` (pill에 맞게 조정)
+
+#### 2. 시간 바 컬러풀
+
+| 남은 시간 비율 | 색상 | 의미 |
+|-------------|------|------|
+| > 60% | `#4A90E2` (파랑) | 여유 |
+| 30~60% | `#4CAF50` (초록) | 보통 |
+| 10~30% | `#FFC107` (노랑) | 경고 |
+| < 10% | `#F44336` (빨강) | 긴급 |
+
+- 각 구간 `shadowBlur=8` 글로우 추가
+
+#### 3. 레벨 클리어 팝업 (`GameState.LEVEL_CLEAR`)
+
+- 기존: `drawOverlay()` 텍스트 + 3초 후 자동 다음 레벨
+- 신규: 카드형 팝업 (딥 스페이스 테마)
+  - 레벨 번호, 별 N개 (글로우), 이번 점수, 최고 기록
+  - 버튼 3개: **↺ 다시하기** (주황) / **→ 다음레벨** (초록) / **☰ 레벨선택** (파랑)
+- `finishLevel()`에서 `setTimeout` 제거 → 사용자가 직접 선택
+- `clearStars`, `clearHighScore` 속성 저장, `levelRecords` 캐시 즉시 갱신
+- 히트 테스트: `_clearRetryBtn`, `_clearNextBtn`, `_clearSelectBtn`
+
+#### 4. 레벨 시작 팝업 (`GameState.LEVEL_START = 8`)
+
+- 기존: `startPuzzle()` → 즉시 게임 시작
+- 신규: 시작 팝업 → **▶ 게임 시작** 버튼 눌러야 시작
+  - 제한 시간, 목표 점수 표시
+  - 별 1/2/3성 도전 점수 표시 (각 색상 차별화)
+  - 버튼 누르기 전까지 타이머 정지 (LEVEL_START 상태는 update에서 제외됨)
+- `_startBtn` 속성에 버튼 위치 저장
+
+**수정 파일**
+- `game.ts`: GameState 추가, 속성 추가, `startPuzzle()`, `finishLevel()`, `handleInputDown()`, `draw()`, `drawUI()`, 체인 콤보 렌더링, `drawLevelClearPopup()` 신규, `drawLevelStartPopup()` 신규
+- `game.js`: 동일 수정
+
+---
+
 ## 2026-04-09 (7차)
 
 ### 버그 수정 + UI 개선: 삼성 브라우저 스크롤 방지 / 메인 메뉴 모던 리디자인

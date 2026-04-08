@@ -49,6 +49,7 @@ var GameState;
     GameState[GameState["GAME_OVER"] = 5] = "GAME_OVER";
     GameState[GameState["LEVEL_SELECT"] = 6] = "LEVEL_SELECT";
     GameState[GameState["CONTINUE_PROMPT"] = 7] = "CONTINUE_PROMPT";
+    GameState[GameState["LEVEL_START"] = 8] = "LEVEL_START";
 })(GameState || (GameState = {}));
 var GemType;
 (function (GemType) {
@@ -250,6 +251,14 @@ class Game {
         // Menu card hit areas (set during drawMenu)
         this._menuPuzzleCard = null;
         this._menuZenCard = null;
+        // Level clear popup state
+        this.clearStars = 0;
+        this.clearHighScore = 0;
+        this._clearRetryBtn = null;
+        this._clearNextBtn = null;
+        this._clearSelectBtn = null;
+        // Level start popup hit area
+        this._startBtn = null;
         // 입력 처리를 위한 추가 속성
         this.touchStartX = 0;
         this.touchStartY = 0;
@@ -359,18 +368,15 @@ class Game {
     startPuzzle(level) {
         this.db.saveGameProgress(level);
         this.finishLevelCalled = false;
-        this.state = GameState.PLAYING_PUZZLE;
         this.level = level;
         this.score = 0;
-        // 난이도 조절
-        // 시간: 레벨 1→70s, 레벨 100→20s (선형 감소)
         this.maxTime = Math.max(20, Math.round(70 - level * 0.5));
         this.timeLeft = this.maxTime;
-        // 목표 점수: 이차 곡선으로 급성장 (연쇄 플레이 필요)
         this.targetScore = Math.floor(4000 + 150 * level + 5 * level * level);
-        // 색상 수: 레벨 1→5종, 10레벨마다 1종 추가 (레벨 71+→12종)
         const colors = Math.min(GEM_EMOJIS.length, Math.floor(5 + (level - 1) / 10));
         this.initGrid(colors);
+        // 레벨 시작 팝업 표시
+        this.state = GameState.LEVEL_START;
     }
     startZen() {
         return __awaiter(this, void 0, void 0, function* () {
@@ -501,9 +507,29 @@ class Game {
             // 탭/드래그 구분은 touchend(handleInputUp)에서 처리하므로 여기서는 아무것도 안 함
             return;
         }
-        if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
-            if (this.levelClearTimer)
-                clearTimeout(this.levelClearTimer);
+        if (this.state === GameState.LEVEL_START) {
+            const sb = this._startBtn;
+            if (sb && clientX >= sb.x && clientX <= sb.x + sb.w &&
+                      clientY >= sb.y && clientY <= sb.y + sb.h) {
+                this.state = GameState.PLAYING_PUZZLE;
+            }
+            return;
+        }
+        if (this.state === GameState.LEVEL_CLEAR) {
+            const rb = this._clearRetryBtn;
+            const nb = this._clearNextBtn;
+            const sb = this._clearSelectBtn;
+            if (rb && clientX >= rb.x && clientX <= rb.x + rb.w && clientY >= rb.y && clientY <= rb.y + rb.h) {
+                this.startPuzzle(this.level);
+            } else if (nb && clientX >= nb.x && clientX <= nb.x + nb.w && clientY >= nb.y && clientY <= nb.y + nb.h) {
+                if (this.level < 100) this.startPuzzle(this.level + 1);
+                else this.state = GameState.MENU;
+            } else if (sb && clientX >= sb.x && clientX <= sb.x + sb.w && clientY >= sb.y && clientY <= sb.y + sb.h) {
+                this.startLevelSelect();
+            }
+            return;
+        }
+        if (this.state === GameState.GAME_OVER) {
             this.state = GameState.MENU;
             return;
         }
@@ -783,20 +809,17 @@ class Game {
     }
     finishLevel() {
         this.finishLevelCalled = true;
-        // 별 기준 상향: 2× 이상 → 3성, 1.5× → 2성, 그 외 → 1성
         const stars = this.score >= this.targetScore * 2 ? 3 : (this.score >= this.targetScore * 1.5 ? 2 : 1);
+        this.clearStars = stars;
         this.db.savePuzzleRecord({ level: this.level, stars: stars, highScore: this.score });
+        const existing = this.levelRecords.get(this.level);
+        this.clearHighScore = Math.max(this.score, (existing === null || existing === void 0 ? void 0 : existing.highScore) || 0);
+        this.levelRecords.set(this.level, {
+            level: this.level,
+            stars: Math.max(stars, (existing === null || existing === void 0 ? void 0 : existing.stars) || 0),
+            highScore: this.clearHighScore
+        });
         this.state = GameState.LEVEL_CLEAR;
-        // Next Level Prep
-        this.levelClearTimer = setTimeout(() => {
-            this.levelClearTimer = null;
-            if (this.level < 100) {
-                this.startPuzzle(this.level + 1);
-            }
-            else {
-                this.state = GameState.MENU; // Game Complete
-            }
-        }, 3000);
     }
     // --- Rendering ---
     loop(timestamp) {
@@ -856,6 +879,11 @@ class Game {
             this.drawLevelSelect();
             return;
         }
+        // 레벨 시작 팝업 (전체 화면)
+        if (this.state === GameState.LEVEL_START) {
+            this.drawLevelStartPopup();
+            return;
+        }
         // ============================================================
         // [수정 핵심] Grid가 아직 생성되지 않았으면 여기서 그리기 중단
         // 비동기 로딩(Zen 모드) 중에 에러가 나는 것을 막아줍니다.
@@ -892,24 +920,40 @@ class Game {
                 this.drawConfirmDialog();
         }
         else if (this.state === GameState.GAME_OVER) {
-            this.drawOverlay("GAME OVER", "Click to Menu");
+            this.drawOverlay("GAME OVER", "탭하여 메뉴로");
         }
         else if (this.state === GameState.LEVEL_CLEAR) {
-            this.drawOverlay("LEVEL CLEARED!", "Next Level starting...");
+            this.drawLevelClearPopup();
         }
         // 6. 연쇄(Chain) 콤보 표시
+        // 6. 연쇄(Chain) 콤보 표시 (가독성 강화: 반투명 pill 배경)
         if (this.comboDisplayTimer > 0 && this.comboChain >= 2) {
             const alpha = Math.min(1, this.comboDisplayTimer * 2);
             this.ctx.save();
             this.ctx.globalAlpha = alpha;
             this.ctx.textAlign = 'center';
             this.ctx.textBaseline = 'middle';
-            const fontSize = Math.min(56, 28 + this.comboChain * 5);
+            const fontSize = Math.min(52, 26 + this.comboChain * 5);
             this.ctx.font = `bold ${fontSize}px Arial`;
-            this.ctx.shadowColor = this.comboChain >= 4 ? '#ff4444' : '#FFD700';
-            this.ctx.shadowBlur = 20;
-            this.ctx.fillStyle = this.comboChain >= 4 ? '#ff8844' : '#FFD700';
-            this.ctx.fillText(`Chain ×${this.comboChain}!`, this.width / 2, this.height * 0.42);
+            const isRed = this.comboChain >= 4;
+            const fillColor = isRed ? '#ff8844' : '#FFD700';
+            const glowColor = isRed ? '#ff4444' : '#FFD700';
+            const cy = this.height * 0.42;
+            const textW = this.ctx.measureText(`Chain ×${this.comboChain}!`).width;
+            const padX = 20, padY = 10;
+            // 반투명 pill 배경
+            this.ctx.fillStyle = 'rgba(0,0,0,0.65)';
+            this.ctx.beginPath();
+            this.ctx.roundRect(this.width / 2 - textW / 2 - padX, cy - fontSize / 2 - padY, textW + padX * 2, fontSize + padY * 2, fontSize / 2 + padY);
+            this.ctx.fill();
+            this.ctx.strokeStyle = isRed ? 'rgba(255,68,68,0.6)' : 'rgba(255,215,0,0.5)';
+            this.ctx.lineWidth = 2;
+            this.ctx.stroke();
+            // 텍스트
+            this.ctx.shadowColor = glowColor;
+            this.ctx.shadowBlur = 24;
+            this.ctx.fillStyle = fillColor;
+            this.ctx.fillText(`Chain ×${this.comboChain}!`, this.width / 2, cy);
             this.ctx.shadowBlur = 0;
             this.ctx.restore();
         }
@@ -1090,16 +1134,30 @@ class Game {
             const barY = safelyY + 25;
             const barWidth = this.width - 40;
             // 배경 바
-            this.ctx.fillStyle = "#444";
+            this.ctx.fillStyle = "#333";
             this.ctx.beginPath();
             this.ctx.roundRect(20, barY, barWidth, barHeight, 5);
             this.ctx.fill();
-            // 진행 바
+            // 진행 바 (컬러풀: 파랑→초록→노랑→빨강)
             const timeRatio = Math.max(0, this.timeLeft / this.maxTime);
-            this.ctx.fillStyle = timeRatio > 0.3 ? "#4CAF50" : "#F44336";
+            let barColor;
+            let barGlow;
+            if (timeRatio > 0.6) {
+                barColor = '#4A90E2'; barGlow = 'rgba(74,144,226,0.7)';
+            } else if (timeRatio > 0.3) {
+                barColor = '#4CAF50'; barGlow = 'rgba(76,175,80,0.7)';
+            } else if (timeRatio > 0.1) {
+                barColor = '#FFC107'; barGlow = 'rgba(255,193,7,0.8)';
+            } else {
+                barColor = '#F44336'; barGlow = 'rgba(244,67,54,0.9)';
+            }
+            this.ctx.shadowColor = barGlow;
+            this.ctx.shadowBlur = 8;
+            this.ctx.fillStyle = barColor;
             this.ctx.beginPath();
             this.ctx.roundRect(20, barY, barWidth * timeRatio, barHeight, 5);
             this.ctx.fill();
+            this.ctx.shadowBlur = 0;
         }
         else if (this.state === GameState.PLAYING_ZEN) {
             // 젠 모드 텍스트
@@ -1209,6 +1267,182 @@ class Game {
         this.ctx.fillText(title, this.width / 2, this.height / 2 - 20);
         this.ctx.font = "20px Arial";
         this.ctx.fillText(subtitle, this.width / 2, this.height / 2 + 20);
+    }
+    drawLevelClearPopup() {
+        const ctx = this.ctx;
+        const cx = this.width / 2;
+        ctx.fillStyle = 'rgba(0,0,0,0.82)';
+        ctx.fillRect(0, 0, this.width, this.height);
+        const cardW = Math.min(320, this.width - 32);
+        const cardH = 390;
+        const cardX = cx - cardW / 2;
+        const cardY = (this.height - cardH) / 2;
+        const r = 16;
+        const cg = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+        cg.addColorStop(0, '#1e2244');
+        cg.addColorStop(1, '#141828');
+        ctx.fillStyle = cg;
+        ctx.beginPath();
+        ctx.roundRect(cardX, cardY, cardW, cardH, r);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(108,99,255,0.55)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cardX, cardY, cardW, cardH, r);
+        ctx.stroke();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 26px Arial';
+        ctx.shadowColor = 'rgba(150,200,100,0.9)';
+        ctx.shadowBlur = 14;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('✨ LEVEL CLEAR!', cx, cardY + 40);
+        ctx.shadowBlur = 0;
+        ctx.font = 'bold 18px Arial';
+        ctx.fillStyle = '#FFD700';
+        ctx.fillText(`LEVEL  ${this.level}`, cx, cardY + 75);
+        const starY = cardY + 115;
+        const starFontSize = Math.min(36, cardW / 5);
+        ctx.font = `${starFontSize}px Arial`;
+        const starSpacing = starFontSize * 1.2;
+        for (let i = 1; i <= 3; i++) {
+            ctx.fillStyle = i <= this.clearStars ? '#FFD700' : 'rgba(255,255,255,0.2)';
+            if (i <= this.clearStars) { ctx.shadowColor = '#FFD700'; ctx.shadowBlur = 12; }
+            ctx.fillText(i <= this.clearStars ? '★' : '☆', cx + (i - 2) * starSpacing, starY);
+            ctx.shadowBlur = 0;
+        }
+        ctx.font = 'bold 28px Arial';
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(this.score.toLocaleString(), cx, cardY + 162);
+        ctx.font = '13px Arial';
+        ctx.fillStyle = '#b0baff';
+        ctx.fillText('이번 점수', cx, cardY + 185);
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#90EE90';
+        ctx.fillText(`최고 기록: ${this.clearHighScore.toLocaleString()}`, cx, cardY + 212);
+        ctx.strokeStyle = 'rgba(108,99,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cardX + 20, cardY + 232);
+        ctx.lineTo(cardX + cardW - 20, cardY + 232);
+        ctx.stroke();
+        const btnH = 46;
+        const btnY = cardY + cardH - 70;
+        const totalBtnW = cardW - 24;
+        const btnW = (totalBtnW - 12) / 3;
+        const b1x = cardX + 12;
+        const b2x = b1x + btnW + 6;
+        const b3x = b2x + btnW + 6;
+        const buttons = [
+            { x: b1x, label: '↺ 다시하기', grad: ['#FF9800','#e65100'] },
+            { x: b2x, label: '→ 다음레벨', grad: ['#4CAF50','#2e7d32'] },
+            { x: b3x, label: '☰ 레벨선택', grad: ['#2196F3','#0d47a1'] },
+        ];
+        for (const btn of buttons) {
+            const bg2 = ctx.createLinearGradient(btn.x, btnY, btn.x, btnY + btnH);
+            bg2.addColorStop(0, btn.grad[0]);
+            bg2.addColorStop(1, btn.grad[1]);
+            ctx.fillStyle = bg2;
+            ctx.beginPath();
+            ctx.roundRect(btn.x, btnY, btnW, btnH, 10);
+            ctx.fill();
+            ctx.font = 'bold 12px Arial';
+            ctx.fillStyle = '#ffffff';
+            ctx.fillText(btn.label, btn.x + btnW / 2, btnY + btnH / 2);
+        }
+        this._clearRetryBtn  = { x: b1x, y: btnY, w: btnW, h: btnH };
+        this._clearNextBtn   = { x: b2x, y: btnY, w: btnW, h: btnH };
+        this._clearSelectBtn = { x: b3x, y: btnY, w: btnW, h: btnH };
+        ctx.textBaseline = 'alphabetic';
+    }
+    drawLevelStartPopup() {
+        const ctx = this.ctx;
+        const cx = this.width / 2;
+        const bg = ctx.createLinearGradient(0, 0, 0, this.height);
+        bg.addColorStop(0, '#0d0f1e');
+        bg.addColorStop(1, '#1a0a2e');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, this.width, this.height);
+        const cardW = Math.min(320, this.width - 32);
+        const cardH = 370;
+        const cardX = cx - cardW / 2;
+        const cardY = (this.height - cardH) / 2;
+        const r = 16;
+        const cg = ctx.createLinearGradient(cardX, cardY, cardX, cardY + cardH);
+        cg.addColorStop(0, '#1e2244');
+        cg.addColorStop(1, '#141828');
+        ctx.fillStyle = cg;
+        ctx.beginPath();
+        ctx.roundRect(cardX, cardY, cardW, cardH, r);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(108,99,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cardX, cardY, cardW, cardH, r);
+        ctx.stroke();
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 28px Arial';
+        ctx.shadowColor = 'rgba(120,100,255,0.9)';
+        ctx.shadowBlur = 16;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(`🎯  LEVEL  ${this.level}`, cx, cardY + 48);
+        ctx.shadowBlur = 0;
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#b0baff';
+        ctx.fillText(`제한 시간: ${this.maxTime}초`, cx, cardY + 88);
+        ctx.font = '14px Arial';
+        ctx.fillStyle = '#90EE90';
+        ctx.fillText(`목표 점수: ${this.targetScore.toLocaleString()}`, cx, cardY + 112);
+        ctx.strokeStyle = 'rgba(108,99,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cardX + 20, cardY + 134);
+        ctx.lineTo(cardX + cardW - 20, cardY + 134);
+        ctx.stroke();
+        const star1 = this.targetScore;
+        const star2 = Math.floor(this.targetScore * 1.5);
+        const star3 = this.targetScore * 2;
+        const challenges = [
+            { stars: 1, score: star1,  color: 'rgba(255,255,255,0.65)', glow: '' },
+            { stars: 2, score: star2,  color: '#90EE90',                glow: 'rgba(144,238,144,0.5)' },
+            { stars: 3, score: star3,  color: '#FFD700',                glow: 'rgba(255,215,0,0.6)' },
+        ];
+        let cy2 = cardY + 162;
+        for (const ch of challenges) {
+            const stars = '★'.repeat(ch.stars) + '☆'.repeat(3 - ch.stars);
+            ctx.font = 'bold 15px Arial';
+            if (ch.glow) { ctx.shadowColor = ch.glow; ctx.shadowBlur = 8; }
+            ctx.fillStyle = ch.color;
+            ctx.fillText(`${stars}   ${ch.score.toLocaleString()} 점`, cx, cy2);
+            ctx.shadowBlur = 0;
+            cy2 += 34;
+        }
+        ctx.strokeStyle = 'rgba(108,99,255,0.3)';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(cardX + 20, cardY + 268);
+        ctx.lineTo(cardX + cardW - 20, cardY + 268);
+        ctx.stroke();
+        const btnW = Math.min(180, cardW - 48);
+        const btnH = 52;
+        const btnX = cx - btnW / 2;
+        const btnY = cardY + cardH - 80;
+        const btnGrad = ctx.createLinearGradient(btnX, btnY, btnX, btnY + btnH);
+        btnGrad.addColorStop(0, '#7c73ff');
+        btnGrad.addColorStop(1, '#4a43cc');
+        ctx.fillStyle = btnGrad;
+        ctx.beginPath();
+        ctx.roundRect(btnX, btnY, btnW, btnH, 14);
+        ctx.fill();
+        ctx.font = 'bold 17px Arial';
+        ctx.fillStyle = '#ffffff';
+        ctx.shadowColor = 'rgba(255,255,255,0.3)';
+        ctx.shadowBlur = 6;
+        ctx.fillText('▶  게임 시작', cx, btnY + btnH / 2);
+        ctx.shadowBlur = 0;
+        this._startBtn = { x: btnX, y: btnY, w: btnW, h: btnH };
+        ctx.textBaseline = 'alphabetic';
     }
     loadLevelRecords() {
         return __awaiter(this, void 0, void 0, function* () {
