@@ -839,7 +839,8 @@ class Game {
             if (this.timeLeft <= 0) {
                 this.state = GameState.GAME_OVER;
             }
-            if (this.score >= this.targetScore && !this.finishLevelCalled) {
+            // 체인이 완전히 끝난 후에만 레벨 완료 처리
+            if (this.score >= this.targetScore && !this.finishLevelCalled && !this.isProcessing) {
                 this.finishLevel();
             }
         }

@@ -1,5 +1,37 @@
 # 변경 이력 (History)
 
+## 2026-04-09 (9차)
+
+### 버그 수정: 체인 중 별점 조기 계산 문제
+
+**증상**
+- 레벨을 최고 점수로 클리어해도 별이 1개만 표시됨
+- 체인(연쇄 매치) 보너스가 모두 쌓이기 전에 별 등급이 결정됨
+
+**원인**
+- `update()`에서 `score >= targetScore && !finishLevelCalled` 조건으로 `finishLevel()` 호출
+- `isProcessing=true` (체인 진행 중) 상태 체크 없음
+- 체인 중간에 targetScore를 넘는 순간 별이 계산되고 LEVEL_CLEAR 전환
+- 이후 체인 보너스 점수가 추가돼도 별 등급에 미반영
+
+**수정**
+```typescript
+// 이전
+if (this.score >= this.targetScore && !this.finishLevelCalled)
+
+// 이후
+if (this.score >= this.targetScore && !this.finishLevelCalled && !this.isProcessing)
+```
+
+- 체인이 완전히 끝나(`isProcessing=false`) 후에만 `finishLevel()` 호출
+- 모든 연쇄 보너스 점수 반영 후 별 등급 결정
+
+**수정 파일**
+- `game.ts`: `update()` 내 finishLevel 호출 조건
+- `game.js`: 동일 수정
+
+---
+
 ## 2026-04-09 (8차)
 
 ### 기능 개선: Chain 가독성 · 컬러 타임바 · 레벨 클리어 팝업 · 레벨 시작 팝업
