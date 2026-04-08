@@ -249,6 +249,10 @@ class Game {
     finishLevelCalled: boolean = false;
     levelClearTimer: ReturnType<typeof setTimeout> | null = null;
 
+    // Chain combo feedback
+    comboChain: number = 0;
+    comboDisplayTimer: number = 0;
+
     // Level select data
     levelRecords: Map<number, PuzzleRecord> = new Map();
     lastSavedLevel: number = 1;
@@ -383,13 +387,15 @@ class Game {
         this.level = level;
         this.score = 0;
 
-        // 난이도 조절: 레벨이 오를수록 시간은 줄고(최소 30초), 목표 점수는 높아짐
-        this.maxTime = Math.max(30, 60 - Math.floor((level - 1) / 5) * 2);
+        // 난이도 조절
+        // 시간: 레벨 1→70s, 레벨 100→20s (선형 감소)
+        this.maxTime = Math.max(20, Math.round(70 - level * 0.5));
         this.timeLeft = this.maxTime;
-        this.targetScore = level * 1500;
+        // 목표 점수: 이차 곡선으로 급성장 (연쇄 플레이 필요)
+        this.targetScore = Math.floor(4000 + 150 * level + 5 * level * level);
 
-        // 색상 수 조절: 레벨 1→3종, 레벨 100→12종
-        const colors = Math.min(GEM_EMOJIS.length, Math.round(3 + (level - 1) * 9 / 99));
+        // 색상 수: 10레벨마다 1종 추가 (레벨 1→3종, 레벨 91+→12종)
+        const colors = Math.min(GEM_EMOJIS.length, Math.floor(3 + (level - 1) / 10));
         this.initGrid(colors);
     }
 
@@ -702,18 +708,31 @@ class Game {
         return Array.from(matchedGems);
     }
 
-    async processMatches(matches: Gem[]) {
+    async processMatches(matches: Gem[], chainLevel: number = 1) {
         this.sound.playMatchSound(matches.length);
 
-        // Remove gems logic
+        // 매치 크기 보너스: 6개+ → ×2.5, 4~5개 → ×1.5, 3개 → ×1.0
+        const sizeMultiplier = matches.length >= 6 ? 2.5
+                             : matches.length >= 4 ? 1.5
+                             : 1.0;
+        // 연쇄(cascade) 보너스: 체인마다 0.75씩 누적, 최대 ×4.0
+        const chainMultiplier = Math.min(4.0, 1.0 + (chainLevel - 1) * 0.75);
+        const pointsPerGem = Math.floor(50 * sizeMultiplier * chainMultiplier);
+
         for (const gem of matches) {
             gem.isMatch = true;
-            this.score += 100;
+            this.score += pointsPerGem;
         }
 
-        // Time Bonus (Puzzle Mode)
-        if (this.state === GameState.PLAYING_PUZZLE) {
-            this.timeLeft = Math.min(this.maxTime, this.timeLeft + matches.length);
+        // 체인 콤보 표시 (2연쇄 이상)
+        if (chainLevel >= 2) {
+            this.comboChain = chainLevel;
+            this.comboDisplayTimer = 1.2;
+        }
+
+        // 시간 보너스: 최초 매치(chainLevel=1)만 적용, 0.5초/gem
+        if (this.state === GameState.PLAYING_PUZZLE && chainLevel === 1) {
+            this.timeLeft = Math.min(this.maxTime, this.timeLeft + matches.length * 0.5);
         }
 
         // Wait for disappear
@@ -726,14 +745,14 @@ class Game {
         // Chain Reaction
         const newMatches = this.findMatches();
         if (newMatches.length > 0) {
-            await this.processMatches(newMatches);
+            await this.processMatches(newMatches, chainLevel + 1);
         }
     }
 
     applyGravity() {
         let colors = 5;
         if (this.state === GameState.PLAYING_PUZZLE) {
-            colors = Math.min(GEM_EMOJIS.length, Math.round(3 + (this.level - 1) * 9 / 99));
+            colors = Math.min(GEM_EMOJIS.length, Math.floor(3 + (this.level - 1) / 10));
         }
         for (let x = 0; x < COLS; x++) {
             // 살아있는 보석만 아래쪽부터 모음
@@ -767,7 +786,8 @@ class Game {
 
     finishLevel() {
         this.finishLevelCalled = true;
-        const stars = this.score > this.targetScore * 1.5 ? 3 : (this.score > this.targetScore * 1.2 ? 2 : 1);
+        // 별 기준 상향: 2× 이상 → 3성, 1.5× → 2성, 그 외 → 1성
+        const stars = this.score >= this.targetScore * 2 ? 3 : (this.score >= this.targetScore * 1.5 ? 2 : 1);
         this.db.savePuzzleRecord({ level: this.level, stars: stars, highScore: this.score });
         this.state = GameState.LEVEL_CLEAR;
 
@@ -795,6 +815,11 @@ class Game {
     }
 
     update(dt: number) {
+        // 콤보 표시 타이머
+        if (this.comboDisplayTimer > 0) {
+            this.comboDisplayTimer -= dt;
+        }
+
         if (this.state === GameState.PLAYING_PUZZLE) {
             this.timeLeft -= dt;
             if (this.timeLeft <= 0) {
@@ -886,6 +911,24 @@ class Game {
             this.drawOverlay("GAME OVER", "Click to Menu");
         } else if (this.state === GameState.LEVEL_CLEAR) {
             this.drawOverlay("LEVEL CLEARED!", "Next Level starting...");
+        }
+
+        // 6. 연쇄(Chain) 콤보 표시
+        if (this.comboDisplayTimer > 0 && this.comboChain >= 2) {
+            const alpha = Math.min(1, this.comboDisplayTimer * 2);
+            this.ctx.save();
+            this.ctx.globalAlpha = alpha;
+            this.ctx.textAlign = 'center';
+            this.ctx.textBaseline = 'middle';
+            const fontSize = Math.min(56, 28 + this.comboChain * 5);
+            this.ctx.font = `bold ${fontSize}px Arial`;
+            // 그림자 효과
+            this.ctx.shadowColor = this.comboChain >= 4 ? '#ff4444' : '#FFD700';
+            this.ctx.shadowBlur = 20;
+            this.ctx.fillStyle = this.comboChain >= 4 ? '#ff8844' : '#FFD700';
+            this.ctx.fillText(`Chain ×${this.comboChain}!`, this.width / 2, this.height * 0.42);
+            this.ctx.shadowBlur = 0;
+            this.ctx.restore();
         }
     }
 
