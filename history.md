@@ -1,5 +1,48 @@
 # 변경 이력 (History)
 
+## 2026-04-09 (10차)
+
+### 기능 추가: 보석 소멸 애니메이션 + 파티클 이펙트
+
+#### 1. 보석 소멸 애니메이션 (Pop Effect)
+
+- 기존: isMatch=true 되면 즉시 사라짐 (200ms 딜레이만 있음)
+- 신규: 0.32초 소멸 애니메이션
+  - **팝**: scale 1→1.22 (먼저 살짝 커짐, 0~30% 구간)
+  - **수축+페이드**: scale 1.22→0, alpha 1→0 (30~100% 구간)
+  - 팝 절정(scale>1.02)일 때 황금 glow(`shadowBlur=18`) 효과
+- `Gem` 인터페이스에 `matchTimer`, `matchScale` 필드 추가
+- processMatches() delay 200ms → 400ms (애니메이션 완료 대기)
+
+#### 2. 파티클 시스템
+
+- 매치 보석 1개당 파티클 5개(chain1) / 7개(chain2) / 10개(chain3+) 스폰
+- 보석 타입별 색상 팔레트 (`GEM_PARTICLE_COLORS` 12종 정의)
+- 물리: 방사형 방출(속도 70~250px/s), 중력(160px/s²), 마찰(0.97/frame)
+- 수명: 0.38~0.6초, alpha = life/maxLife (선형 페이드)
+- 렌더링: glow(`shadowBlur=6`) 원형 파티클
+
+#### 3. 쇼크웨이브 링 이펙트
+
+- 매치 그룹 중심에서 원형 파동 확산
+- 반지름: cellSize × (1.8 + chainLevel × 0.4) (체인 레벨에 비례)
+- 수명: 0.38초, ease-out-quad alpha 감소
+- 테두리 두께: 수명에 비례 감소, glow(`shadowBlur=10`)
+
+#### 4. 렌더링 레이어 순서
+
+1. 일반 보석 (isMatch=false)
+2. 소멸 중 보석 (isMatch=true, alpha/scale 적용)
+3. 쇼크웨이브
+4. 파티클
+5. UI 오버레이
+
+**수정 파일**
+- `game.ts`: Gem/Particle/Shockwave 인터페이스, GEM_PARTICLE_COLORS, Game 속성, createGem(), processMatches(), update(), draw(), drawGem(), spawnParticles(), spawnShockwave(), drawParticles(), drawShockwaves() 신규/수정
+- `game.js`: 동일 수정
+
+---
+
 ## 2026-04-09 (9차)
 
 ### 버그 수정: 체인 중 별점 조기 계산 문제

@@ -32,6 +32,22 @@ const GEM_EMOJIS = [
     "👑", // 11 - 왕관
 ];
 
+// 보석 타입별 파티클 색상 팔레트
+const GEM_PARTICLE_COLORS: string[][] = [
+    ['#E0D5FF','#C9BBFF','#ffffff'],  // 💎 다이아
+    ['#FFD700','#FFC700','#FFED4E'],  // ⭐ 별
+    ['#FF6B35','#FF4500','#FF8C42'],  // 🔥 불꽃
+    ['#4ECDC4','#2FB3AE','#7FE5E0'],  // 💧 물
+    ['#52B788','#74C69D','#B7E4C7'],  // 🍀 클로버
+    ['#B0B3FF','#8B8FFF','#D4D7FF'],  // 🌙 달
+    ['#FFE66D','#FFD700','#FFFF99'],  // ⚡ 번개
+    ['#FF69B4','#FF1493','#FFB6D9'],  // 🌸 벚꽃
+    ['#FFE5B4','#ffffff','#FFD4A3'],  // ✨ 반짝임
+    ['#9D84B7','#6B5B95','#C5B3D6'],  // 🔮 수정구슬
+    ['#FF6B9D','#FFD700','#87CEEB'],  // 🌈 무지개
+    ['#FFD700','#FFC700','#ffffff'],  // 👑 왕관
+];
+
 enum GameState {
     MENU,
     PLAYING_PUZZLE,
@@ -56,6 +72,28 @@ interface Gem {
     drawY: number; // Animation Y
     alpha: number; // For deletion effect
     isMatch: boolean;
+    matchTimer: number;  // 1.0→0 disappear animation progress
+    matchScale: number;  // pop scale during disappear
+}
+
+interface Particle {
+    x: number; y: number;
+    vx: number; vy: number;
+    alpha: number;
+    size: number;
+    color: string;
+    life: number;
+    maxLife: number;
+}
+
+interface Shockwave {
+    x: number; y: number;
+    radius: number;
+    maxRadius: number;
+    life: number;
+    maxLife: number;
+    color: string;
+    alpha: number;
 }
 
 interface PuzzleRecord {
@@ -260,6 +298,10 @@ class Game {
     // Chain combo feedback
     comboChain: number = 0;
     comboDisplayTimer: number = 0;
+
+    // Particle & shockwave effects
+    particles: Particle[] = [];
+    shockwaves: Shockwave[] = [];
 
     // In-game menu / confirm dialog
     confirmAction: 'retry' | 'levelSelect' | null = null;
@@ -470,7 +512,9 @@ class Game {
             drawX: x,
             drawY: y,
             alpha: 1,
-            isMatch: false
+            isMatch: false,
+            matchTimer: 0,
+            matchScale: 1
         };
     }
 
@@ -820,8 +864,14 @@ class Game {
 
         for (const gem of matches) {
             gem.isMatch = true;
+            gem.matchTimer = 1.0;
+            gem.matchScale = 1.0;
             this.score += pointsPerGem;
+            // 파티클 스폰
+            this.spawnParticles(gem, chainLevel);
         }
+        // 쇼크웨이브 스폰 (매치 그룹 중심)
+        this.spawnShockwave(matches, chainLevel);
 
         // 체인 콤보 표시 (2연쇄 이상)
         if (chainLevel >= 2) {
@@ -834,8 +884,8 @@ class Game {
             this.timeLeft = Math.min(this.maxTime, this.timeLeft + matches.length * 0.5);
         }
 
-        // Wait for disappear
-        await new Promise(r => setTimeout(r, 200));
+        // 소멸 애니메이션 대기 (400ms: matchTimer 0.35s 완료 + 여유)
+        await new Promise(r => setTimeout(r, 400));
 
         // Refill logic
         this.applyGravity();
@@ -930,18 +980,49 @@ class Game {
         }
 
         // Animation Interpolation
-        // 수정된 부분: grid가 초기화되지 않았거나 행이 없으면 건너뜀
         if (this.grid.length === 0) return;
 
         for (let y = 0; y < ROWS; y++) {
             for (let x = 0; x < COLS; x++) {
                 const gem = this.grid[y][x];
                 if (gem) {
-                    // Simple lerp
                     gem.drawX += (gem.x - gem.drawX) * 0.2;
                     gem.drawY += (gem.y - gem.drawY) * 0.2;
+                    // 소멸 애니메이션: matchTimer 1→0 (0.32초)
+                    if (gem.isMatch && gem.matchTimer > 0) {
+                        gem.matchTimer = Math.max(0, gem.matchTimer - dt / 0.32);
+                        gem.alpha = gem.matchTimer;
+                        // pop: 먼저 살짝 커졌다(0~30%) 작아짐(30~100%)
+                        if (gem.matchTimer > 0.7) {
+                            gem.matchScale = 1.0 + (1.0 - gem.matchTimer) / 0.3 * 0.22;
+                        } else {
+                            gem.matchScale = (gem.matchTimer / 0.7) * 1.22;
+                        }
+                    }
                 }
             }
+        }
+
+        // 파티클 업데이트
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.life -= dt;
+            if (p.life <= 0) { this.particles.splice(i, 1); continue; }
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.vy += 160 * dt; // 중력
+            p.vx *= 0.97;     // 마찰
+            p.alpha = p.life / p.maxLife;
+        }
+
+        // 쇼크웨이브 업데이트
+        for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+            const s = this.shockwaves[i];
+            s.life -= dt;
+            if (s.life <= 0) { this.shockwaves.splice(i, 1); continue; }
+            const prog = 1 - s.life / s.maxLife;
+            s.radius = s.maxRadius * prog;
+            s.alpha = (1 - prog) * (1 - prog); // ease-out-quad
         }
     }
 
@@ -997,17 +1078,32 @@ class Game {
         // 4. 보석 그리기
         const cellSize = GEM_SIZE * this.scale;
         for (let y = 0; y < ROWS; y++) {
-            // [안전 장치] 해당 행(Row)이 존재하는지 확인
             if (!this.grid[y]) continue;
-
             for (let x = 0; x < COLS; x++) {
                 const gem = this.grid[y][x];
-                // gem이 있고, 매치되어 사라지는 중이 아닐 때만 그림 (또는 사라지는 효과 구현 시 변경)
                 if (gem && !gem.isMatch) {
-                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, this.selectedGem !== null && gem.x === this.selectedGem.x && gem.y === this.selectedGem.y);
+                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize,
+                        this.selectedGem !== null && gem.x === this.selectedGem.x && gem.y === this.selectedGem.y);
                 }
             }
         }
+
+        // 4b. 소멸 중인 보석 (alpha/scale 애니메이션)
+        for (let y = 0; y < ROWS; y++) {
+            if (!this.grid[y]) continue;
+            for (let x = 0; x < COLS; x++) {
+                const gem = this.grid[y][x];
+                if (gem && gem.isMatch && gem.matchTimer > 0) {
+                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, false, gem.alpha, gem.matchScale);
+                }
+            }
+        }
+
+        // 4c. 쇼크웨이브 이펙트
+        this.drawShockwaves();
+
+        // 4d. 파티클 이펙트
+        this.drawParticles();
 
         // 5. 오버레이(일시정지, 게임오버 등) 그리기
         if (this.state === GameState.PAUSED) {
@@ -1198,11 +1294,24 @@ class Game {
         );
     }
 
-    drawGem(x: number, y: number, type: number, size: number, isSelected: boolean) {
+    drawGem(x: number, y: number, type: number, size: number, isSelected: boolean,
+            alpha: number = 1, gemScale: number = 1) {
         const px = this.offsetX + x * size;
         const py = this.offsetY + y * size;
+        const cx = px + size / 2;
+        const cy = py + size / 2;
 
-        // 선택 하이라이트 (이모지 뒤에 먼저 그림)
+        this.ctx.save();
+        this.ctx.globalAlpha = alpha;
+
+        // 스케일 변환 (보석 중심 기준)
+        if (gemScale !== 1) {
+            this.ctx.translate(cx, cy);
+            this.ctx.scale(gemScale, gemScale);
+            this.ctx.translate(-cx, -cy);
+        }
+
+        // 선택 하이라이트
         if (isSelected) {
             this.ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
             this.ctx.fillRect(px + 2, py + 2, size - 4, size - 4);
@@ -1211,12 +1320,19 @@ class Game {
             this.ctx.strokeRect(px, py, size, size);
         }
 
-        // 이모지 렌더링
+        // pop 중 (scale > 1) 일때 glow
+        if (gemScale > 1.02) {
+            this.ctx.shadowColor = 'rgba(255,240,160,0.9)';
+            this.ctx.shadowBlur = 18;
+        }
+
         const emoji = GEM_EMOJIS[type] ?? "💎";
         this.ctx.font = `${size * 0.75}px sans-serif`;
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
-        this.ctx.fillText(emoji, px + size / 2, py + size / 2);
+        this.ctx.fillText(emoji, cx, cy);
+        this.ctx.shadowBlur = 0;
+        this.ctx.restore();
     }
 
     drawUI() {
@@ -1402,6 +1518,86 @@ class Game {
         this._menuZenCard    = { x: cardX, y: p2Y, w: cardW, h: cardH };
 
         ctx.textBaseline = 'alphabetic';
+    }
+
+    spawnParticles(gem: Gem, chainLevel: number) {
+        if (this.particles.length > 350) return; // 최대 파티클 제한
+        const cellSize = GEM_SIZE * this.scale;
+        const cx = this.offsetX + (gem.drawX + 0.5) * cellSize;
+        const cy = this.offsetY + (gem.drawY + 0.5) * cellSize;
+        const colors = GEM_PARTICLE_COLORS[gem.type] ?? ['#FFD700', '#ffffff'];
+        const count = chainLevel >= 3 ? 10 : chainLevel === 2 ? 7 : 5;
+
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 70 + Math.random() * 180;
+            const maxLife = 0.38 + Math.random() * 0.22;
+            this.particles.push({
+                x: cx, y: cy,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 25,
+                alpha: 1,
+                size: 2.5 + Math.random() * (chainLevel >= 3 ? 4 : chainLevel === 2 ? 3 : 2),
+                color: colors[Math.floor(Math.random() * colors.length)],
+                life: maxLife,
+                maxLife
+            });
+        }
+    }
+
+    spawnShockwave(matches: Gem[], chainLevel: number) {
+        if (matches.length === 0) return;
+        const cellSize = GEM_SIZE * this.scale;
+        let cx = 0, cy = 0;
+        for (const g of matches) {
+            cx += this.offsetX + (g.drawX + 0.5) * cellSize;
+            cy += this.offsetY + (g.drawY + 0.5) * cellSize;
+        }
+        cx /= matches.length;
+        cy /= matches.length;
+        const colors = GEM_PARTICLE_COLORS[matches[0].type] ?? ['#FFD700'];
+        const maxRadius = cellSize * (1.8 + chainLevel * 0.4);
+        this.shockwaves.push({
+            x: cx, y: cy,
+            radius: 0, maxRadius,
+            life: 0.38, maxLife: 0.38,
+            color: colors[0],
+            alpha: 1
+        });
+    }
+
+    drawParticles() {
+        const ctx = this.ctx;
+        ctx.save();
+        for (const p of this.particles) {
+            ctx.globalAlpha = p.alpha;
+            ctx.fillStyle = p.color;
+            ctx.shadowColor = p.color;
+            ctx.shadowBlur = 6;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+
+    drawShockwaves() {
+        const ctx = this.ctx;
+        ctx.save();
+        for (const s of this.shockwaves) {
+            if (s.radius <= 0) continue;
+            ctx.globalAlpha = s.alpha * 0.7;
+            ctx.strokeStyle = s.color;
+            ctx.shadowColor = s.color;
+            ctx.shadowBlur = 10;
+            ctx.lineWidth = Math.max(1, 3 * (s.life / s.maxLife));
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
     }
 
     drawOverlay(title: string, subtitle: string) {

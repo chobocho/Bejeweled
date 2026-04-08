@@ -39,6 +39,20 @@ const GEM_EMOJIS = [
     "🌈", // 10 - 무지개
     "👑", // 11 - 왕관
 ];
+const GEM_PARTICLE_COLORS = [
+    ['#E0D5FF','#C9BBFF','#ffffff'],
+    ['#FFD700','#FFC700','#FFED4E'],
+    ['#FF6B35','#FF4500','#FF8C42'],
+    ['#4ECDC4','#2FB3AE','#7FE5E0'],
+    ['#52B788','#74C69D','#B7E4C7'],
+    ['#B0B3FF','#8B8FFF','#D4D7FF'],
+    ['#FFE66D','#FFD700','#FFFF99'],
+    ['#FF69B4','#FF1493','#FFB6D9'],
+    ['#FFE5B4','#ffffff','#FFD4A3'],
+    ['#9D84B7','#6B5B95','#C5B3D6'],
+    ['#FF6B9D','#FFD700','#87CEEB'],
+    ['#FFD700','#FFC700','#ffffff'],
+];
 var GameState;
 (function (GameState) {
     GameState[GameState["MENU"] = 0] = "MENU";
@@ -242,6 +256,8 @@ class Game {
         // Chain combo feedback
         this.comboChain = 0;
         this.comboDisplayTimer = 0;
+        this.particles = [];
+        this.shockwaves = [];
         // In-game menu / confirm dialog
         this.confirmAction = null;
         this.showConfirm = false;
@@ -424,7 +440,9 @@ class Game {
             drawX: x,
             drawY: y,
             alpha: 1,
-            isMatch: false
+            isMatch: false,
+            matchTimer: 0,
+            matchScale: 1
         };
     }
     checkMatchAt(x, y) {
@@ -751,8 +769,12 @@ class Game {
             const pointsPerGem = Math.floor(50 * sizeMultiplier * chainMultiplier);
             for (const gem of matches) {
                 gem.isMatch = true;
+                gem.matchTimer = 1.0;
+                gem.matchScale = 1.0;
                 this.score += pointsPerGem;
+                this.spawnParticles(gem, chainLevel);
             }
+            this.spawnShockwave(matches, chainLevel);
             // 체인 콤보 표시 (2연쇄 이상)
             if (chainLevel >= 2) {
                 this.comboChain = chainLevel;
@@ -762,8 +784,8 @@ class Game {
             if (this.state === GameState.PLAYING_PUZZLE && chainLevel === 1) {
                 this.timeLeft = Math.min(this.maxTime, this.timeLeft + matches.length * 0.5);
             }
-            // Wait for disappear
-            yield new Promise(r => setTimeout(r, 200));
+            // 소멸 애니메이션 대기 (400ms)
+            yield new Promise(r => setTimeout(r, 400));
             // Refill logic
             this.applyGravity();
             yield new Promise(r => setTimeout(r, 200));
@@ -852,11 +874,39 @@ class Game {
             for (let x = 0; x < COLS; x++) {
                 const gem = this.grid[y][x];
                 if (gem) {
-                    // Simple lerp
                     gem.drawX += (gem.x - gem.drawX) * 0.2;
                     gem.drawY += (gem.y - gem.drawY) * 0.2;
+                    if (gem.isMatch && gem.matchTimer > 0) {
+                        gem.matchTimer = Math.max(0, gem.matchTimer - dt / 0.32);
+                        gem.alpha = gem.matchTimer;
+                        if (gem.matchTimer > 0.7) {
+                            gem.matchScale = 1.0 + (1.0 - gem.matchTimer) / 0.3 * 0.22;
+                        } else {
+                            gem.matchScale = (gem.matchTimer / 0.7) * 1.22;
+                        }
+                    }
                 }
             }
+        }
+        // 파티클 업데이트
+        for (let i = this.particles.length - 1; i >= 0; i--) {
+            const p = this.particles[i];
+            p.life -= dt;
+            if (p.life <= 0) { this.particles.splice(i, 1); continue; }
+            p.x += p.vx * dt;
+            p.y += p.vy * dt;
+            p.vy += 160 * dt;
+            p.vx *= 0.97;
+            p.alpha = p.life / p.maxLife;
+        }
+        // 쇼크웨이브 업데이트
+        for (let i = this.shockwaves.length - 1; i >= 0; i--) {
+            const s = this.shockwaves[i];
+            s.life -= dt;
+            if (s.life <= 0) { this.shockwaves.splice(i, 1); continue; }
+            const prog = 1 - s.life / s.maxLife;
+            s.radius = s.maxRadius * prog;
+            s.alpha = (1 - prog) * (1 - prog);
         }
     }
     draw() {
@@ -903,17 +953,29 @@ class Game {
         // 4. 보석 그리기
         const cellSize = GEM_SIZE * this.scale;
         for (let y = 0; y < ROWS; y++) {
-            // [안전 장치] 해당 행(Row)이 존재하는지 확인
-            if (!this.grid[y])
-                continue;
+            if (!this.grid[y]) continue;
             for (let x = 0; x < COLS; x++) {
                 const gem = this.grid[y][x];
-                // gem이 있고, 매치되어 사라지는 중이 아닐 때만 그림 (또는 사라지는 효과 구현 시 변경)
                 if (gem && !gem.isMatch) {
-                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, this.selectedGem !== null && gem.x === this.selectedGem.x && gem.y === this.selectedGem.y);
+                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize,
+                        this.selectedGem !== null && gem.x === this.selectedGem.x && gem.y === this.selectedGem.y);
                 }
             }
         }
+        // 4b. 소멸 중인 보석
+        for (let y = 0; y < ROWS; y++) {
+            if (!this.grid[y]) continue;
+            for (let x = 0; x < COLS; x++) {
+                const gem = this.grid[y][x];
+                if (gem && gem.isMatch && gem.matchTimer > 0) {
+                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, false, gem.alpha, gem.matchScale);
+                }
+            }
+        }
+        // 4c. 쇼크웨이브
+        this.drawShockwaves();
+        // 4d. 파티클
+        this.drawParticles();
         // 5. 오버레이(일시정지, 게임오버 등) 그리기
         if (this.state === GameState.PAUSED) {
             this.drawGameMenu();
@@ -1079,11 +1141,19 @@ class Game {
         this.ctx.font = 'bold 14px Arial';
         this.ctx.fillText(this.confirmAction === 'retry' ? '다시하기' : '이동', confirmX + btnW / 2, btnY + btnH / 2);
     }
-    drawGem(x, y, type, size, isSelected) {
+    drawGem(x, y, type, size, isSelected, alpha = 1, gemScale = 1) {
         var _a;
         const px = this.offsetX + x * size;
         const py = this.offsetY + y * size;
-        // 선택 하이라이트 (이모지 뒤에 먼저 그림)
+        const cx = px + size / 2;
+        const cy = py + size / 2;
+        this.ctx.save();
+        this.ctx.globalAlpha = alpha;
+        if (gemScale !== 1) {
+            this.ctx.translate(cx, cy);
+            this.ctx.scale(gemScale, gemScale);
+            this.ctx.translate(-cx, -cy);
+        }
         if (isSelected) {
             this.ctx.fillStyle = "rgba(255, 255, 255, 0.25)";
             this.ctx.fillRect(px + 2, py + 2, size - 4, size - 4);
@@ -1091,12 +1161,17 @@ class Game {
             this.ctx.lineWidth = 3;
             this.ctx.strokeRect(px, py, size, size);
         }
-        // 이모지 렌더링
+        if (gemScale > 1.02) {
+            this.ctx.shadowColor = 'rgba(255,240,160,0.9)';
+            this.ctx.shadowBlur = 18;
+        }
         const emoji = (_a = GEM_EMOJIS[type]) !== null && _a !== void 0 ? _a : "💎";
         this.ctx.font = `${size * 0.75}px sans-serif`;
         this.ctx.textAlign = "center";
         this.ctx.textBaseline = "middle";
-        this.ctx.fillText(emoji, px + size / 2, py + size / 2);
+        this.ctx.fillText(emoji, cx, cy);
+        this.ctx.shadowBlur = 0;
+        this.ctx.restore();
     }
     drawUI() {
         // UI 영역의 높이
@@ -1258,6 +1333,81 @@ class Game {
         this._menuPuzzleCard = { x: cardX, y: p1Y, w: cardW, h: cardH };
         this._menuZenCard    = { x: cardX, y: p2Y, w: cardW, h: cardH };
         ctx.textBaseline = 'alphabetic';
+    }
+    spawnParticles(gem, chainLevel) {
+        if (this.particles.length > 350) return;
+        const cellSize = GEM_SIZE * this.scale;
+        const cx = this.offsetX + (gem.drawX + 0.5) * cellSize;
+        const cy = this.offsetY + (gem.drawY + 0.5) * cellSize;
+        const colors = GEM_PARTICLE_COLORS[gem.type] || ['#FFD700', '#ffffff'];
+        const count = chainLevel >= 3 ? 10 : chainLevel === 2 ? 7 : 5;
+        for (let i = 0; i < count; i++) {
+            const angle = Math.random() * Math.PI * 2;
+            const speed = 70 + Math.random() * 180;
+            const maxLife = 0.38 + Math.random() * 0.22;
+            this.particles.push({
+                x: cx, y: cy,
+                vx: Math.cos(angle) * speed,
+                vy: Math.sin(angle) * speed - 25,
+                alpha: 1,
+                size: 2.5 + Math.random() * (chainLevel >= 3 ? 4 : chainLevel === 2 ? 3 : 2),
+                color: colors[Math.floor(Math.random() * colors.length)],
+                life: maxLife,
+                maxLife
+            });
+        }
+    }
+    spawnShockwave(matches, chainLevel) {
+        if (matches.length === 0) return;
+        const cellSize = GEM_SIZE * this.scale;
+        let cx = 0, cy = 0;
+        for (const g of matches) {
+            cx += this.offsetX + (g.drawX + 0.5) * cellSize;
+            cy += this.offsetY + (g.drawY + 0.5) * cellSize;
+        }
+        cx /= matches.length;
+        cy /= matches.length;
+        const colors = GEM_PARTICLE_COLORS[matches[0].type] || ['#FFD700'];
+        const maxRadius = cellSize * (1.8 + chainLevel * 0.4);
+        this.shockwaves.push({
+            x: cx, y: cy,
+            radius: 0, maxRadius,
+            life: 0.38, maxLife: 0.38,
+            color: colors[0],
+            alpha: 1
+        });
+    }
+    drawParticles() {
+        const ctx = this.ctx;
+        ctx.save();
+        for (const p of this.particles) {
+            ctx.globalAlpha = p.alpha;
+            ctx.fillStyle = p.color;
+            ctx.shadowColor = p.color;
+            ctx.shadowBlur = 6;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
+    }
+    drawShockwaves() {
+        const ctx = this.ctx;
+        ctx.save();
+        for (const s of this.shockwaves) {
+            if (s.radius <= 0) continue;
+            ctx.globalAlpha = s.alpha * 0.7;
+            ctx.strokeStyle = s.color;
+            ctx.shadowColor = s.color;
+            ctx.shadowBlur = 10;
+            ctx.lineWidth = Math.max(1, 3 * (s.life / s.maxLife));
+            ctx.beginPath();
+            ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+            ctx.stroke();
+        }
+        ctx.shadowBlur = 0;
+        ctx.restore();
     }
     drawOverlay(title, subtitle) {
         this.ctx.fillStyle = "rgba(0,0,0,0.7)";
