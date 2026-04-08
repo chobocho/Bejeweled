@@ -23,7 +23,8 @@ enum GameState {
     PLAYING_ZEN,
     PAUSED,
     LEVEL_CLEAR,
-    GAME_OVER
+    GAME_OVER,
+    LEVEL_SELECT
 }
 
 enum GemType {
@@ -199,6 +200,13 @@ class Game {
     isProcessing: boolean = false;
     lastTime: number = 0;
 
+    // Bug fix flags
+    finishLevelCalled: boolean = false;
+    levelClearTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Level select data
+    levelRecords: Map<number, PuzzleRecord> = new Map();
+
     // 입력 처리를 위한 추가 속성
     touchStartX: number = 0;
     touchStartY: number = 0;
@@ -291,6 +299,7 @@ class Game {
     // --- Game Logic ---
 
     startPuzzle(level: number) {
+        this.finishLevelCalled = false;
         this.state = GameState.PLAYING_PUZZLE;
         this.level = level;
         this.score = 0;
@@ -393,34 +402,48 @@ class Game {
 
         // 메뉴 버튼 처리 등은 좌표 변환 없이 기존 로직과 유사하게 처리
         if (this.state === GameState.MENU) {
-            if (clientY > this.height / 2 - 50 && clientY < this.height / 2) this.startPuzzle(1);
-            else if (clientY > this.height / 2 + 20 && clientY < this.height / 2 + 70) this.startZen();
+            if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
+                clientY > this.height / 2 - 50 && clientY < this.height / 2) {
+                this.startLevelSelect();
+            } else if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
+                       clientY > this.height / 2 + 20 && clientY < this.height / 2 + 70) {
+                this.startZen();
+            }
             return;
         }
 
-        // 일시정지 버튼 등 UI 처리
-        if (this.state === GameState.PLAYING_PUZZLE && clientX > this.width - 60 && clientY < 60) {
-            this.state = GameState.PAUSED;
-            return;
-        }
-        if (this.state === GameState.PAUSED) {
-            this.state = GameState.PLAYING_PUZZLE;
+        // 레벨 선택 화면 처리
+        if (this.state === GameState.LEVEL_SELECT) {
+            if (clientX < 80 && clientY < 60) {
+                this.state = GameState.MENU;
+                return;
+            }
+            const level = this.getLevelFromClick(clientX, clientY);
+            if (level !== null) {
+                this.startPuzzle(level);
+            }
             return;
         }
 
         if (this.state === GameState.LEVEL_CLEAR || this.state === GameState.GAME_OVER) {
+            if (this.levelClearTimer) clearTimeout(this.levelClearTimer);
             this.state = GameState.MENU;
             return;
         }
 
         // UI 버튼 처리 (Puzzle: 일시정지, Zen: 나가기)
         // 우측 상단 영역 터치 시
+        if (this.state === GameState.PAUSED) {
+            this.state = GameState.PLAYING_PUZZLE;
+            return;
+        }
+
         if (clientX > this.width - 80 && clientY < this.offsetY) {
             if (this.state === GameState.PLAYING_PUZZLE) {
                 this.state = GameState.PAUSED;
             } else if (this.state === GameState.PLAYING_ZEN) {
-                this.state = GameState.MENU; // 젠 모드는 저장 후 메뉴로
-                this.saveState();
+                this.saveState(); // PLAYING_ZEN 상태일 때 먼저 저장
+                this.state = GameState.MENU;
             }
             return;
         }
@@ -587,27 +610,29 @@ class Game {
     }
 
     applyGravity() {
+        let colors = 5;
+        if (this.state === GameState.PLAYING_PUZZLE) {
+            colors = Math.min(GEM_COLORS.length, 4 + Math.floor(this.level / 10));
+        }
         for (let x = 0; x < COLS; x++) {
-            let emptySlots = 0;
+            // 살아있는 보석만 아래쪽부터 모음
+            const surviving: Gem[] = [];
             for (let y = ROWS - 1; y >= 0; y--) {
-                if (this.grid[y][x].isMatch) {
-                    emptySlots++;
-                } else if (emptySlots > 0) {
-                    // Move down
-                    this.grid[y + emptySlots][x] = this.grid[y][x];
-                    this.grid[y + emptySlots][x].y += emptySlots;
-                    this.grid[y][x] = null as any; // Temporary
+                if (this.grid[y][x] && !this.grid[y][x].isMatch) {
+                    surviving.push(this.grid[y][x]);
                 }
             }
-            // Fill top
-            for (let y = 0; y < emptySlots; y++) {
-                // Determine num colors based on level (if puzzle)
-                let colors = 5;
-                if(this.state === GameState.PLAYING_PUZZLE) {
-                    colors = Math.min(GEM_COLORS.length, 4 + Math.floor(this.level / 10));
-                }
-                this.grid[y][x] = this.createGem(x, y, colors);
-                // Start above screen for animation effect (simplified here just spawn)
+            // 아래쪽부터 살아있는 보석 배치
+            for (let i = 0; i < surviving.length; i++) {
+                const newY = ROWS - 1 - i;
+                surviving[i].y = newY;
+                surviving[i].drawY = newY;
+                this.grid[newY][x] = surviving[i];
+            }
+            // 위쪽 빈 자리에 새 보석 생성
+            const emptyCount = ROWS - surviving.length;
+            for (let i = 0; i < emptyCount; i++) {
+                this.grid[i][x] = this.createGem(x, i, colors);
             }
         }
     }
@@ -620,12 +645,14 @@ class Game {
     }
 
     finishLevel() {
+        this.finishLevelCalled = true;
         const stars = this.score > this.targetScore * 1.5 ? 3 : (this.score > this.targetScore * 1.2 ? 2 : 1);
         this.db.savePuzzleRecord({ level: this.level, stars: stars, highScore: this.score });
         this.state = GameState.LEVEL_CLEAR;
 
         // Next Level Prep
-        setTimeout(() => {
+        this.levelClearTimer = setTimeout(() => {
+            this.levelClearTimer = null;
             if (this.level < 100) {
                 this.startPuzzle(this.level + 1);
             } else {
@@ -637,7 +664,7 @@ class Game {
     // --- Rendering ---
 
     loop(timestamp: number) {
-        const dt = (timestamp - this.lastTime) / 1000;
+        const dt = Math.min((timestamp - this.lastTime) / 1000, 0.1);
         this.lastTime = timestamp;
 
         this.update(dt);
@@ -652,7 +679,7 @@ class Game {
             if (this.timeLeft <= 0) {
                 this.state = GameState.GAME_OVER;
             }
-            if (this.score >= this.targetScore) {
+            if (this.score >= this.targetScore && !this.finishLevelCalled) {
                 this.finishLevel();
             }
         }
@@ -687,6 +714,12 @@ class Game {
             return;
         }
 
+        // 레벨 선택 화면
+        if (this.state === GameState.LEVEL_SELECT) {
+            this.drawLevelSelect();
+            return;
+        }
+
         // ============================================================
         // [수정 핵심] Grid가 아직 생성되지 않았으면 여기서 그리기 중단
         // 비동기 로딩(Zen 모드) 중에 에러가 나는 것을 막아줍니다.
@@ -714,7 +747,7 @@ class Game {
                 const gem = this.grid[y][x];
                 // gem이 있고, 매치되어 사라지는 중이 아닐 때만 그림 (또는 사라지는 효과 구현 시 변경)
                 if (gem && !gem.isMatch) {
-                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, gem === this.selectedGem);
+                    this.drawGem(gem.drawX, gem.drawY, gem.type, cellSize, this.selectedGem !== null && gem.x === this.selectedGem.x && gem.y === this.selectedGem.y);
                 }
             }
         }
@@ -861,6 +894,85 @@ class Game {
         this.ctx.fillText(title, this.width / 2, this.height / 2 - 20);
         this.ctx.font = "20px Arial";
         this.ctx.fillText(subtitle, this.width / 2, this.height / 2 + 20);
+    }
+
+    async loadLevelRecords() {
+        for (let i = 1; i <= 100; i++) {
+            const record = await this.db.getPuzzleRecord(i);
+            if (record) this.levelRecords.set(i, record);
+        }
+    }
+
+    startLevelSelect() {
+        this.loadLevelRecords().then(() => {
+            this.state = GameState.LEVEL_SELECT;
+        });
+    }
+
+    getLevelFromClick(clientX: number, clientY: number): number | null {
+        const cols = 5;
+        const rows = 20; // 100 levels / 5 cols
+        const startY = 80;
+        const cellW = this.width / cols;
+        const cellH = (this.height - startY) / rows;
+
+        if (clientY < startY) return null;
+
+        const col = Math.floor(clientX / cellW);
+        const row = Math.floor((clientY - startY) / cellH);
+        const level = row * cols + col + 1;
+
+        if (level >= 1 && level <= 100) return level;
+        return null;
+    }
+
+    drawLevelSelect() {
+        this.ctx.fillStyle = "rgba(0,0,0,0.9)";
+        this.ctx.fillRect(0, 0, this.width, this.height);
+
+        this.ctx.fillStyle = "white";
+        this.ctx.textAlign = "center";
+        this.ctx.font = "bold 24px Arial";
+        this.ctx.fillText("SELECT LEVEL", this.width / 2, 40);
+
+        // 뒤로가기
+        this.ctx.textAlign = "left";
+        this.ctx.font = "20px Arial";
+        this.ctx.fillText("< BACK", 10, 40);
+
+        const cols = 5;
+        const rows = 20;
+        const startY = 80;
+        const cellW = this.width / cols;
+        const cellH = (this.height - startY) / rows;
+
+        for (let i = 0; i < 100; i++) {
+            const level = i + 1;
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            const cx = col * cellW + cellW / 2;
+            const cy = startY + row * cellH + cellH / 2;
+
+            const record = this.levelRecords.get(level);
+            const stars = record ? record.stars : 0;
+
+            // 배경
+            this.ctx.fillStyle = stars > 0 ? "#1a3a1a" : "#1a1a2a";
+            this.ctx.fillRect(col * cellW + 2, startY + row * cellH + 2, cellW - 4, cellH - 4);
+
+            // 레벨 번호
+            this.ctx.fillStyle = "white";
+            this.ctx.textAlign = "center";
+            this.ctx.font = `${Math.min(cellW, cellH) * 0.3}px Arial`;
+            this.ctx.fillText(`${level}`, cx, cy - cellH * 0.1);
+
+            // 별 표시
+            if (stars > 0) {
+                this.ctx.fillStyle = "#FFD700";
+                this.ctx.font = `${Math.min(cellW, cellH) * 0.25}px Arial`;
+                this.ctx.fillText("★".repeat(stars), cx, cy + cellH * 0.25);
+            }
+        }
     }
 }
 

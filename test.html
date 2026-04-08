@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bejeweled Test Runner</title>
+    <style>
+        body {
+            font-family: 'Courier New', monospace;
+            padding: 20px;
+            background: #1a1a1a;
+            color: #eee;
+            margin: 0;
+        }
+        h1 { color: #FFD700; margin-bottom: 4px; }
+        .suite { margin-top: 16px; font-size: 15px; font-weight: bold; color: #87CEEB; }
+        .pass { color: #4CAF50; padding-left: 8px; }
+        .fail { color: #F44336; padding-left: 8px; }
+        #summary {
+            margin-top: 24px;
+            font-size: 18px;
+            border-top: 2px solid #555;
+            padding-top: 12px;
+        }
+        .pass-text { color: #4CAF50; }
+        .fail-text { color: #F44336; }
+    </style>
+</head>
+<body>
+    <h1>Bejeweled - Test Runner</h1>
+    <p style="color:#aaa; margin-top:0">External library free · Pure TypeScript</p>
+    <div id="output"></div>
+    <div id="summary"></div>
+    <script src="test.js"></script>
+</body>
+</html>
