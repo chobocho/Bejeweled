@@ -1,5 +1,46 @@
 # 변경 이력 (History)
 
+## 2026-04-09 (7차)
+
+### 버그 수정 + UI 개선: 삼성 브라우저 스크롤 방지 / 메인 메뉴 모던 리디자인
+
+#### 1. 삼성 모바일 인터넷 스크롤 방지 (`index.html`)
+
+| 항목 | 이전 | 이후 |
+|------|------|------|
+| `html` | 설정 없음 | `overflow:hidden; overscroll-behavior:none; height:100%` 추가 |
+| `body` | `touch-action:none` 만 있음 | `overscroll-behavior:none` 추가 |
+| `canvas` | 설정 없음 | `touch-action:none; overscroll-behavior:none` 추가 |
+
+- 삼성 인터넷 브라우저는 `body`에만 `touch-action:none`이 있어도 `canvas` 요소에서 스크롤이 발생
+- `canvas`에 직접 `touch-action:none` 추가하고 `html`/`body`/`canvas` 전체에 `overscroll-behavior:none` 적용하여 완전 차단
+
+#### 2. 메인 메뉴 모던 리디자인 (`drawMenu()`)
+
+**이전 방식**
+- 단색 배경 `rgba(0,0,0,0.8)`, `fillRect` 직사각형 버튼
+- 고정 좌표(`±100px`) 히트 테스트
+
+**신규 방식**
+- 딥 스페이스 그라디언트 배경 (`#0d0f1e → #1a0a2e`) — 다른 화면과 동일
+- 별빛 장식 (8개 고정 위치 원)
+- 타이틀 `💎 GEM PUZZLE` — 퍼플 글로우 (`shadowBlur=18`)
+- **퍼즐 모드 카드**: 초록 테두리, 설명 문구, `▶ 시작하기`
+- **명상 모드 카드**: 파란 테두리, 설명 문구, `▶ 시작하기`
+- `roundRect(radius=16)` 라운드 카드
+- 히트 테스트: `drawMenu()`에서 계산한 카드 위치(`_menuPuzzleCard`, `_menuZenCard`)를 속성에 저장 → `handleInputDown()`에서 동적으로 사용 (반응형)
+
+#### 3. 별점 보존 확인
+
+- `DBManager.savePuzzleRecord()`: `stars = Math.max(new, existing)`, `highScore = Math.max(new, existing)` — 이미 구현 완료 확인
+
+**수정 파일**
+- `index.html`: `html`/`canvas` CSS 규칙 추가
+- `game.ts`: `drawMenu()` 전면 교체, `_menuPuzzleCard`/`_menuZenCard` 속성 추가, `handleInputDown()` MENU 블록 히트 테스트 동적화
+- `game.js`: 동일 수정
+
+---
+
 ## 2026-04-09 (6차)
 
 ### 기능 추가/개선: 인게임 메뉴, 다시하기, 레벨 선택, 최고 기록 보존

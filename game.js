@@ -247,6 +247,9 @@ class Game {
         // Level select data
         this.levelRecords = new Map();
         this.lastSavedLevel = 1;
+        // Menu card hit areas (set during drawMenu)
+        this._menuPuzzleCard = null;
+        this._menuZenCard = null;
         // 입력 처리를 위한 추가 속성
         this.touchStartX = 0;
         this.touchStartY = 0;
@@ -475,12 +478,13 @@ class Game {
         }
         // 메뉴 버튼 처리 등은 좌표 변환 없이 기존 로직과 유사하게 처리
         if (this.state === GameState.MENU) {
-            if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
-                clientY > this.height / 2 - 50 && clientY < this.height / 2) {
+            const pc = this._menuPuzzleCard;
+            const zc = this._menuZenCard;
+            if (pc && clientX >= pc.x && clientX <= pc.x + pc.w &&
+                      clientY >= pc.y && clientY <= pc.y + pc.h) {
                 this.startLevelSelect();
-            }
-            else if (clientX > this.width / 2 - 100 && clientX < this.width / 2 + 100 &&
-                clientY > this.height / 2 + 20 && clientY < this.height / 2 + 70) {
+            } else if (zc && clientX >= zc.x && clientX <= zc.x + zc.w &&
+                             clientY >= zc.y && clientY <= zc.y + zc.h) {
                 this.startZen();
             }
             return;
@@ -1108,22 +1112,93 @@ class Game {
         }
     }
     drawMenu() {
-        this.ctx.fillStyle = "rgba(0,0,0,0.8)";
-        this.ctx.fillRect(0, 0, this.width, this.height);
-        this.ctx.fillStyle = "white";
-        this.ctx.textAlign = "center";
-        this.ctx.font = "bold 40px Arial";
-        this.ctx.fillText("GEM PUZZLE", this.width / 2, this.height / 3);
-        // Buttons
-        this.ctx.fillStyle = "#4CAF50";
-        this.ctx.fillRect(this.width / 2 - 100, this.height / 2 - 50, 200, 50);
-        this.ctx.fillStyle = "white";
-        this.ctx.font = "20px Arial";
-        this.ctx.fillText("PUZZLE MODE", this.width / 2, this.height / 2 - 18);
-        this.ctx.fillStyle = "#2196F3";
-        this.ctx.fillRect(this.width / 2 - 100, this.height / 2 + 20, 200, 50);
-        this.ctx.fillStyle = "white";
-        this.ctx.fillText("ZEN MODE", this.width / 2, this.height / 2 + 52);
+        const ctx = this.ctx;
+        const cx = this.width / 2;
+        // 배경: 딥 스페이스 그라디언트
+        const bg = ctx.createLinearGradient(0, 0, 0, this.height);
+        bg.addColorStop(0, '#0d0f1e');
+        bg.addColorStop(1, '#1a0a2e');
+        ctx.fillStyle = bg;
+        ctx.fillRect(0, 0, this.width, this.height);
+        // 별빛 효과 (고정 패턴)
+        ctx.fillStyle = 'rgba(255,255,255,0.5)';
+        const stars = [[0.1,0.08],[0.85,0.12],[0.3,0.18],[0.7,0.06],[0.55,0.22],[0.2,0.3],[0.9,0.25],[0.4,0.05]];
+        for (const [sx, sy] of stars) {
+            ctx.beginPath();
+            ctx.arc(sx * this.width, sy * this.height, 1.5, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        // 타이틀
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 38px Arial';
+        ctx.shadowColor = 'rgba(150,100,255,0.8)';
+        ctx.shadowBlur = 18;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText('💎 GEM PUZZLE', cx, this.height * 0.22);
+        ctx.shadowBlur = 0;
+        // 서브타이틀
+        ctx.font = '14px Arial';
+        ctx.fillStyle = 'rgba(176,186,255,0.7)';
+        ctx.fillText('모드를 선택하세요', cx, this.height * 0.31);
+        // 카드 공통 크기
+        const cardW = Math.min(300, this.width - 48);
+        const cardH = 110;
+        const cardX = cx - cardW / 2;
+        const gap = 20;
+        const totalCards = 2 * cardH + gap;
+        const startY = (this.height - totalCards) / 2 + this.height * 0.06;
+        // --- 퍼즐 모드 카드 ---
+        const p1Y = startY;
+        const puzzleGrad = ctx.createLinearGradient(cardX, p1Y, cardX, p1Y + cardH);
+        puzzleGrad.addColorStop(0, '#1a2d1a');
+        puzzleGrad.addColorStop(1, '#0d1a0d');
+        ctx.fillStyle = puzzleGrad;
+        ctx.beginPath();
+        ctx.roundRect(cardX, p1Y, cardW, cardH, 16);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(80,220,100,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cardX, p1Y, cardW, cardH, 16);
+        ctx.stroke();
+        ctx.textBaseline = 'middle';
+        ctx.font = 'bold 22px Arial';
+        ctx.fillStyle = '#90EE90';
+        ctx.fillText('🔷 퍼즐 모드', cx, p1Y + 36);
+        ctx.font = '13px Arial';
+        ctx.fillStyle = 'rgba(200,240,200,0.65)';
+        ctx.fillText('레벨 1~100 · 시간 제한 · 별점 기록', cx, p1Y + 68);
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = 'rgba(144,238,144,0.8)';
+        ctx.fillText('▶  시작하기', cx, p1Y + 92);
+        // --- 젠 모드 카드 ---
+        const p2Y = startY + cardH + gap;
+        const zenGrad = ctx.createLinearGradient(cardX, p2Y, cardX, p2Y + cardH);
+        zenGrad.addColorStop(0, '#0d1a2d');
+        zenGrad.addColorStop(1, '#0a1020');
+        ctx.fillStyle = zenGrad;
+        ctx.beginPath();
+        ctx.roundRect(cardX, p2Y, cardW, cardH, 16);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(80,160,255,0.45)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(cardX, p2Y, cardW, cardH, 16);
+        ctx.stroke();
+        ctx.font = 'bold 22px Arial';
+        ctx.fillStyle = '#87CEEB';
+        ctx.fillText('🧘 명상 모드', cx, p2Y + 36);
+        ctx.font = '13px Arial';
+        ctx.fillStyle = 'rgba(180,220,255,0.65)';
+        ctx.fillText('시간 제한 없음 · 자유 플레이 · 자동 저장', cx, p2Y + 68);
+        ctx.font = 'bold 12px Arial';
+        ctx.fillStyle = 'rgba(135,206,235,0.8)';
+        ctx.fillText('▶  시작하기', cx, p2Y + 92);
+        // 카드 위치를 속성에 저장 (히트 테스트용)
+        this._menuPuzzleCard = { x: cardX, y: p1Y, w: cardW, h: cardH };
+        this._menuZenCard    = { x: cardX, y: p2Y, w: cardW, h: cardH };
+        ctx.textBaseline = 'alphabetic';
     }
     drawOverlay(title, subtitle) {
         this.ctx.fillStyle = "rgba(0,0,0,0.7)";
